@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
     getAuth, 
@@ -26,12 +26,14 @@ let FIREBASE_CONFIG = {};
 let INITIAL_AUTH_TOKEN = null;
 
 try {
-    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+    // 确保 JSON 解析发生在 try-catch 块内
+    if (typeof __firebase_config === 'string' && __firebase_config.trim().length > 0) {
         FIREBASE_CONFIG = JSON.parse(__firebase_config);
     }
     INITIAL_AUTH_TOKEN = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 } catch (e) {
-    console.error("Firebase environment configuration failed:", e);
+    console.error("Firebase environment configuration failed during JSON parsing:", e);
+    // 如果解析失败，FIREBASE_CONFIG 保持为 {}
 }
 
 // Function to get the correct Firestore collection reference
@@ -52,7 +54,7 @@ const LoadingSpinner = () => (
     </div>
 );
 
-// --- 3. Task Modal Component (Omitted for brevity, assumed correct) ---
+// --- 3. Task Modal Component (保持不变) ---
 
 const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
     const [title, setTitle] = useState('');
@@ -129,7 +131,7 @@ const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
     );
 };
 
-// --- 4. AI Breakdown Modal Component (Omitted for brevity, assumed correct) ---
+// --- 4. AI Breakdown Modal Component (保持不变) ---
 
 const BreakdownModal = ({ isOpen, onClose, title, breakdown, loading }) => {
     if (!isOpen) return null;
@@ -177,7 +179,7 @@ const BreakdownModal = ({ isOpen, onClose, title, breakdown, loading }) => {
     );
 };
 
-// --- 5. Task Item Component (Omitted for brevity, assumed correct) ---
+// --- 5. Task Item Component (保持不变) ---
 
 const TaskItem = ({ task, updateTask, deleteTask, onGenerateBreakdown }) => {
     
@@ -252,11 +254,16 @@ const App = () => {
     const [tasks, setTasks] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    const [isAuthReady, setIsAuthReady] = useState(false); // Flag to ensure userId is available
     
+    // isAuthReady 现在由 onAuthStateChanged 严格控制
+    const [isAuthReady, setIsAuthReady] = useState(false); 
+    const authCompletedRef = useRef(false); // 确保 isAuthReady 只设置一次
+
+    // Task group state
     const [currentGroup, setCurrentGroup] = useState(defaultGroups[0]);
     const [isModalOpen, setIsModalOpen] = useState(false);
     
+    // AI breakdown state
     const [breakdownState, setBreakdownState] = useState({
         isOpen: false,
         title: '',
@@ -265,7 +272,7 @@ const App = () => {
     });
 
 
-    // --- Gemini API Call Logic (Unchanged) ---
+    // --- Gemini API Call Logic (保持不变) ---
     const generateTaskBreakdown = useCallback(async (title) => {
         setBreakdownState({ isOpen: true, title: title, breakdown: '', loading: true });
         
@@ -324,67 +331,77 @@ const App = () => {
     }, []);
 
 
-    // --- Firebase Auth & Init (FIXED TIMING) ---
+    // --- Firebase Auth & Init (核心时序修复) ---
     useEffect(() => {
-        if (!FIREBASE_CONFIG.apiKey) {
-            setError("错误: Firebase 配置缺失。无法初始化数据库连接。");
-            setIsAuthReady(true);
-            return; 
-        }
-
         const initFirebaseAndAuth = async () => {
             let unsubscribeAuth = () => {};
             try {
+                // 1. 初始化 Firebase App
                 const app = initializeApp(FIREBASE_CONFIG);
                 const firestoreDb = getFirestore(app);
                 const authInstance = getAuth(app);
                 
-                // 1. Set instances immediately
                 setDb(firestoreDb);
                 setAuth(authInstance);
 
-                // 2. Perform initial sign-in and WAIT for it to resolve
+                // 2. 提前设置身份验证状态监听器
+                unsubscribeAuth = onAuthStateChanged(authInstance, (user) => {
+                    if (user) {
+                        setUserId(user.uid);
+                    } else {
+                        setUserId(null); 
+                    }
+                    
+                    // 3. 关键：仅在监听器返回第一个状态时，标记为“认证就绪”
+                    if (!authCompletedRef.current) {
+                        setIsAuthReady(true);
+                        setLoading(false); // 停止全局加载
+                        authCompletedRef.current = true;
+                    }
+                });
+
+                // 4. 执行初始登录（这将触发 onAuthStateChanged 更新）
                 if (INITIAL_AUTH_TOKEN) {
                     await signInWithCustomToken(authInstance, INITIAL_AUTH_TOKEN);
                 } else {
                     await signInAnonymously(authInstance);
                 }
-
-                // 3. Setup listener (It will fire immediately with the now-logged-in user)
-                unsubscribeAuth = onAuthStateChanged(authInstance, (user) => {
-                    if (user) {
-                        // User is now guaranteed to be set after sign-in resolved
-                        setUserId(user.uid);
-                    } else {
-                        setUserId(null); 
-                    }
-                });
                 
             } catch (e) {
                 console.error("Firebase Initialization/Auth Error:", e);
-                setError(`Firebase 初始化/身份验证失败: ${e.message}`);
-            } finally {
-                // 4. Crucial: Mark ready ONLY after the initial sign-in attempt is done (success or failure)
-                setIsAuthReady(true);
+                // 提供更清晰的配置错误提示
+                const message = (e.code === 'app/no-app' || e.message.includes('missing or invalid'))
+                    ? "初始化失败：Firebase 配置无效或缺失。请检查控制台错误。"
+                    : `身份验证或初始化失败: ${e.message}`;
+                setError(message);
+                
+                // 失败时也必须让 UI 停止加载，否则用户看不到错误
+                if (!authCompletedRef.current) {
+                    setIsAuthReady(true);
+                    setLoading(false);
+                    authCompletedRef.current = true;
+                }
             }
+            // 返回清理函数
             return unsubscribeAuth;
         };
 
         const cleanupPromise = initFirebaseAndAuth();
 
         return () => {
-            // Cleanup the auth listener when the component unmounts
+            // 组件卸载时清理 auth 监听器
             cleanupPromise.then(unsub => unsub && unsub());
         };
         
     }, []);
 
 
-    // --- Firestore Realtime Listener (Unchanged) ---
+    // --- Firestore Realtime Listener ---
     useEffect(() => {
-        // Guard clause: Do not proceed until Firebase and user ID are ready
+        // 守卫子句：确保 Firebase 实例和 userId 都已就绪
         if (!db || !userId || !isAuthReady) {
-            setLoading(false); 
+            // 如果 isAuthReady=true 但 userId=null，则显示未登录状态但跳过查询
+            if (isAuthReady) setLoading(false);
             return;
         }
 
@@ -394,7 +411,7 @@ const App = () => {
         try {
             const tasksRef = getTasksCollectionRef(db, userId);
             
-            // Query for tasks in the current group, sorted by completion status and creation time
+            // 查询：过滤当前分组，并按完成状态和创建时间排序
             const q = query(
                 tasksRef, 
                 where('groupId', '==', currentGroup),
@@ -411,11 +428,7 @@ const App = () => {
                 setLoading(false);
             }, (err) => {
                 console.error("Firestore Listen Error:", err);
-                if (err.code === 'failed-precondition') {
-                     setError("查询设置错误：请检查 Firebase Console 是否已创建复合索引 (groupId, is_done, createdAt)");
-                } else {
-                     setError("实时数据同步失败。请检查 Firestore 规则。");
-                }
+                setError("实时数据同步失败。可能缺少 Firestore 索引或安全规则错误。");
                 setLoading(false);
             });
 
@@ -429,7 +442,7 @@ const App = () => {
     }, [db, userId, isAuthReady, currentGroup]);
 
 
-    // --- Firestore CRUD Operations (Unchanged) ---
+    // --- Firestore CRUD Operations (保持不变) ---
     const dbOperationsReady = db && userId;
 
     const addTask = useCallback(async (title, importance) => {
@@ -475,7 +488,7 @@ const App = () => {
     }, [db, userId, dbOperationsReady]);
 
 
-    // --- Render Logic (Unchanged) ---
+    // --- Render Logic (保持不变) ---
     const pendingTasks = tasks.filter(t => !t.is_done);
     const completedTasks = tasks.filter(t => t.is_done);
 
@@ -487,6 +500,7 @@ const App = () => {
         );
     }
     
+    // Auth 状态显示
     const userStatus = auth?.currentUser?.isAnonymous ? "匿名用户" : (auth?.currentUser?.uid ? "已登录" : "未登录");
 
     return (
