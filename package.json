@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "firebase": "^9.0.0",  // 确保这一行存在且版本正确
+    "lucide-react": "^0.303.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
