@@ -26,7 +26,7 @@ const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-todo-app';
 let FIREBASE_CONFIG = {};
 let INITIAL_AUTH_TOKEN = null;
 let CONFIG_ERROR_MESSAGE = '';
-let CONFIG_SOURCE_INFO = '未开始配置检查'; // 更新初始值
+let CONFIG_SOURCE_INFO = '未开始配置检查'; 
 
 INITIAL_AUTH_TOKEN = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
@@ -34,7 +34,6 @@ INITIAL_AUTH_TOKEN = typeof __initial_auth_token !== 'undefined' ? __initial_aut
 const attemptedSources = [];
 
 // --- 尝试方法 1 (首选): 读取独立的全局变量 (兼容 Vercel/Vite 分散注入) ---
-// 使用 window 对象读取全局变量是正确的，但应避免在非组件顶层执行复杂的逻辑
 const W = typeof window !== 'undefined' ? window : {}; // 确保在非浏览器环境中也能安全运行
     
 // 尝试使用 VITE 前缀或无前缀的命名
@@ -79,9 +78,15 @@ if (!FIREBASE_CONFIG.apiKey || !FIREBASE_CONFIG.projectId) {
     CONFIG_SOURCE_INFO = attemptedSources.join(' | ');
     CONFIG_ERROR_MESSAGE = `致命错误：Firebase 配置缺失。已尝试从以下来源加载配置但失败：\n${CONFIG_SOURCE_INFO}。\n请确保 'apiKey' 和 'projectId' 字段正确设置。`;
     FIREBASE_CONFIG = {}; // 确保配置对象是空的，阻止后续初始化
+    
+    // **调试信息：将关键变量的状态打印到控制台**
+    console.error("--- Firebase Config Check Failed ---");
+    console.error(`- Detected API Key (Independent check): ${API_KEY ? 'Present' : 'Missing or Empty'}`);
+    console.error(`- Detected Project ID (Independent check): ${PROJECT_ID ? 'Present' : 'Missing or Empty'}`);
+    console.error(`- Detected __firebase_config (JSON check): ${typeof __firebase_config !== 'undefined' && __firebase_config.trim().length > 0 ? 'Present (Length: ' + __firebase_config.trim().length + ')' : 'Missing or Empty'}`);
+    console.error("--------------------------------------");
+    
 } else {
-    // 设置 Firestore 日志级别以方便调试
-    // setLogLevel('Debug'); // 移除此行，因为它可能不在所有环境中可用
     console.log(`Firebase config successfully loaded via ${CONFIG_SOURCE_INFO}.`);
 }
 
@@ -117,6 +122,9 @@ const ConfigError = ({ message, source }) => (
             </p>
             <p className="text-sm text-gray-500 mt-2 font-mono break-all">
                 **尝试配置源:** <br/>{source}
+            </p>
+            <p className="mt-4 text-xs text-red-500 font-semibold">
+                **请检查浏览器控制台 (Console) 获取详细调试信息。**
             </p>
         </div>
     </div>
