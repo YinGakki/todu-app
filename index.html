@@ -1,28 +1,80 @@
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-  tailwind.config = {
-    darkMode: 'class', // 启用手动控制深色模式
-    theme: {
-      extend: {
-        colors: {
-          glass: "rgba(255, 255, 255, 0.25)",
-          glassDark: "rgba(17, 24, 39, 0.75)",
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>任务管理器 Pro</title>
+
+    <!-- 1. 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- 2. 配置 Tailwind (支持深色模式和自定义动画) -->
+    <script>
+      tailwind.config = {
+        darkMode: 'class', // 关键：启用手动/Class控制的深色模式
+        theme: {
+          extend: {
+            animation: {
+              'slide-in': 'slideIn 0.4s ease-out forwards', // 任务进入动画
+              'fade-in': 'fadeIn 0.5s ease-out forwards',   // 模态框淡入
+            },
+            keyframes: {
+              slideIn: {
+                '0%': { opacity: '0', transform: 'translateY(20px)' },
+                '100%': { opacity: '1', transform: 'translateY(0)' },
+              },
+              fadeIn: {
+                '0%': { opacity: '0' },
+                '100%': { opacity: '1' },
+              }
+            }
+          }
         }
       }
-    }
-  }
-</script>
-<style>
-  /* 全局动画定义 */
-  @keyframes slideIn {
-    from { opacity: 0; transform: translateY(20px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .animate-slide-in {
-    animation: slideIn 0.4s ease-out forwards;
-  }
-  /* 自定义滚动条 */
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-  .dark ::-webkit-scrollbar-thumb { background: #475569; }
-</style>
+    </script>
+
+    <!-- 3. 全局样式 (自定义滚动条) -->
+    <style>
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      }
+
+      /* 针对 Webkit 浏览器 (Chrome/Safari) 的滚动条美化 */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      
+      ::-webkit-scrollbar-track {
+        background: transparent; 
+      }
+      
+      ::-webkit-scrollbar-thumb {
+        background: #cbd5e1; /* 浅色模式滚动条颜色 */
+        border-radius: 4px;
+      }
+      
+      ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+      }
+
+      /* 深色模式下的滚动条样式 */
+      .dark ::-webkit-scrollbar-thumb {
+        background: #4b5563; 
+      }
+      .dark ::-webkit-scrollbar-thumb:hover {
+        background: #6b7280;
+      }
+    </style>
+  </head>
+  
+  <body>
+    <!-- React 应用挂载点 -->
+    <div id="root"></div>
+    
+    <!-- 入口文件 -->
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
