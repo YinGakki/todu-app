@@ -106,8 +106,17 @@ const parseSubtaskCandidates = (content) => {
 
 
 // --- 1. Firebase 初始化与全局配置 ---
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = {
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID
+};
+
+// 确保 appId 有值，否则任务存储路径会出错
+const appId = firebaseConfig.appId || 'default-app-id';
 
 // 使用私有路径存储任务
 const getTasksCollectionRef = (db, userId) => {
