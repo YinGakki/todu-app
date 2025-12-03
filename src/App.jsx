@@ -52,7 +52,7 @@ const LoadingSpinner = () => (
     </div>
 );
 
-// --- 3. Task Modal Component ---
+// --- 3. Task Modal Component (Omitted for brevity, assumed correct) ---
 
 const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
     const [title, setTitle] = useState('');
@@ -129,12 +129,11 @@ const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
     );
 };
 
-// --- 4. AI Breakdown Modal Component ---
+// --- 4. AI Breakdown Modal Component (Omitted for brevity, assumed correct) ---
 
 const BreakdownModal = ({ isOpen, onClose, title, breakdown, loading }) => {
     if (!isOpen) return null;
     
-    // Simple text rendering with <br /> for new lines
     const formattedBreakdown = breakdown.split('\n').map((line, index) => (
         <React.Fragment key={index}>
             {line}
@@ -178,7 +177,7 @@ const BreakdownModal = ({ isOpen, onClose, title, breakdown, loading }) => {
     );
 };
 
-// --- 5. Task Item Component ---
+// --- 5. Task Item Component (Omitted for brevity, assumed correct) ---
 
 const TaskItem = ({ task, updateTask, deleteTask, onGenerateBreakdown }) => {
     
@@ -253,13 +252,11 @@ const App = () => {
     const [tasks, setTasks] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    const [isAuthReady, setIsAuthReady] = useState(false);
+    const [isAuthReady, setIsAuthReady] = useState(false); // Flag to ensure userId is available
     
-    // Task group state
     const [currentGroup, setCurrentGroup] = useState(defaultGroups[0]);
     const [isModalOpen, setIsModalOpen] = useState(false);
     
-    // AI breakdown state
     const [breakdownState, setBreakdownState] = useState({
         isOpen: false,
         title: '',
@@ -268,7 +265,7 @@ const App = () => {
     });
 
 
-    // --- Gemini API Call Logic ---
+    // --- Gemini API Call Logic (Unchanged) ---
     const generateTaskBreakdown = useCallback(async (title) => {
         setBreakdownState({ isOpen: true, title: title, breakdown: '', loading: true });
         
@@ -327,62 +324,63 @@ const App = () => {
     }, []);
 
 
-    // --- Firebase Auth & Init ---
+    // --- Firebase Auth & Init (FIXED TIMING) ---
     useEffect(() => {
-        let unsubscribeAuth = null; 
-
         if (!FIREBASE_CONFIG.apiKey) {
             setError("错误: Firebase 配置缺失。无法初始化数据库连接。");
             setIsAuthReady(true);
             return; 
         }
 
-        try {
-            const app = initializeApp(FIREBASE_CONFIG);
-            const firestoreDb = getFirestore(app);
-            const authInstance = getAuth(app);
-            setDb(firestoreDb);
-            setAuth(authInstance);
+        const initFirebaseAndAuth = async () => {
+            let unsubscribeAuth = () => {};
+            try {
+                const app = initializeApp(FIREBASE_CONFIG);
+                const firestoreDb = getFirestore(app);
+                const authInstance = getAuth(app);
+                
+                // 1. Set instances immediately
+                setDb(firestoreDb);
+                setAuth(authInstance);
 
-            const performAuth = async (auth) => {
-                try {
-                    if (INITIAL_AUTH_TOKEN) {
-                        await signInWithCustomToken(auth, INITIAL_AUTH_TOKEN);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                } catch (e) {
-                    console.error("Firebase Auth Error:", e);
-                    setError(`身份验证失败: ${e.message}`);
-                } 
-            };
-
-            // Setup auth state listener
-            unsubscribeAuth = onAuthStateChanged(authInstance, (user) => {
-                if (user) {
-                    setUserId(user.uid);
+                // 2. Perform initial sign-in and WAIT for it to resolve
+                if (INITIAL_AUTH_TOKEN) {
+                    await signInWithCustomToken(authInstance, INITIAL_AUTH_TOKEN);
                 } else {
-                    // If no user is logged in, attempt to log in
-                    performAuth(authInstance);
+                    await signInAnonymously(authInstance);
                 }
-                setIsAuthReady(true); // Mark auth process as completed
-            });
 
-            return () => {
-                if (unsubscribeAuth) {
-                    unsubscribeAuth();
-                }
-            };
-            
-        } catch (e) {
-            console.error("Firebase Initialization Error:", e);
-            setError(`Firebase 初始化失败: ${e.message}`);
-            setIsAuthReady(true); 
-        }
+                // 3. Setup listener (It will fire immediately with the now-logged-in user)
+                unsubscribeAuth = onAuthStateChanged(authInstance, (user) => {
+                    if (user) {
+                        // User is now guaranteed to be set after sign-in resolved
+                        setUserId(user.uid);
+                    } else {
+                        setUserId(null); 
+                    }
+                });
+                
+            } catch (e) {
+                console.error("Firebase Initialization/Auth Error:", e);
+                setError(`Firebase 初始化/身份验证失败: ${e.message}`);
+            } finally {
+                // 4. Crucial: Mark ready ONLY after the initial sign-in attempt is done (success or failure)
+                setIsAuthReady(true);
+            }
+            return unsubscribeAuth;
+        };
+
+        const cleanupPromise = initFirebaseAndAuth();
+
+        return () => {
+            // Cleanup the auth listener when the component unmounts
+            cleanupPromise.then(unsub => unsub && unsub());
+        };
+        
     }, []);
 
 
-    // --- Firestore Realtime Listener ---
+    // --- Firestore Realtime Listener (Unchanged) ---
     useEffect(() => {
         // Guard clause: Do not proceed until Firebase and user ID are ready
         if (!db || !userId || !isAuthReady) {
@@ -431,7 +429,7 @@ const App = () => {
     }, [db, userId, isAuthReady, currentGroup]);
 
 
-    // --- Firestore CRUD Operations ---
+    // --- Firestore CRUD Operations (Unchanged) ---
     const dbOperationsReady = db && userId;
 
     const addTask = useCallback(async (title, importance) => {
@@ -477,7 +475,7 @@ const App = () => {
     }, [db, userId, dbOperationsReady]);
 
 
-    // --- Render Logic ---
+    // --- Render Logic (Unchanged) ---
     const pendingTasks = tasks.filter(t => !t.is_done);
     const completedTasks = tasks.filter(t => t.is_done);
 
@@ -489,12 +487,10 @@ const App = () => {
         );
     }
     
-    // Check Auth status for display
     const userStatus = auth?.currentUser?.isAnonymous ? "匿名用户" : (auth?.currentUser?.uid ? "已登录" : "未登录");
 
     return (
         <div className="min-h-screen bg-gray-50 pb-28 relative font-sans">
-            {/* Inline CSS for animations to ensure they are available */}
             <style>{`
                 /* Global Content Fade In */
                 @keyframes fadeIn { 
@@ -513,14 +509,12 @@ const App = () => {
                 }
             `}</style>
             
-            {/* Header and Group Selector */}
             <header className="bg-gradient-to-r from-indigo-600 to-blue-500 shadow-xl p-5 sticky top-0 z-40">
                 <div className="max-w-2xl mx-auto flex justify-between items-center">
                     <h1 className="text-3xl font-black text-white flex items-center">
                         <LayoutGrid className="w-7 h-7 mr-2" /> 任务板
                     </h1>
                     
-                    {/* Group Switcher */}
                     <div className="flex items-center space-x-2 bg-white/20 p-1 rounded-xl shadow-inner">
                         <span className="text-sm text-gray-100 hidden sm:block">分组:</span>
                         <select
