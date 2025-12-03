@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { 
     getAuth, 
     signInAnonymously, 
-    signInWithCustomToken, // 导入 CustomToken 登录
+    signInWithCustomToken, 
     onAuthStateChanged 
 } from 'firebase/auth';
 import { 
@@ -20,35 +20,31 @@ import {
 } from 'firebase/firestore';
 import { Plus, X, Check, Trash2, LayoutGrid, Loader2, Zap, User, Sparkles } from 'lucide-react';
 
-// --- 1. Firebase 初始化与全局配置 (使用 Canvas 全局变量) ---
-// 从全局变量 __app_id 获取应用标识符，如果不存在则使用默认值
+// --- 1. Global Configuration and Firebase Setup ---
 const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-todo-app';
 let FIREBASE_CONFIG = {};
+let INITIAL_AUTH_TOKEN = null;
 
 try {
-    // 从全局变量 __firebase_config 尝试解析 Firebase 配置
     if (typeof __firebase_config !== 'undefined' && __firebase_config) {
         FIREBASE_CONFIG = JSON.parse(__firebase_config);
     }
+    INITIAL_AUTH_TOKEN = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 } catch (e) {
-    console.error("Failed to parse Firebase configuration:", e);
-    // 保持配置为空，让后续逻辑检测到
-    FIREBASE_CONFIG = {};
+    console.error("Firebase environment configuration failed:", e);
 }
 
-// 全局变量 __initial_auth_token 包含认证所需的令牌
-const INITIAL_AUTH_TOKEN = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-// 使用私有路径存储任务
+// Function to get the correct Firestore collection reference
 const getTasksCollectionRef = (db, userId) => {
-    // 路径示例: my-todo-list-v1/users/{userId}/tasks
+    // Private path: /artifacts/{appId}/users/{userId}/tasks
     return collection(db, `${APP_ID}/users/${userId}/tasks`);
 };
 
-// 预定义任务组
+// Default task groups
 const defaultGroups = ['个人', '工作', '家庭'];
 
-// --- 2. 辅助组件：加载指示器 ---
+// --- 2. Utility Components ---
+
 const LoadingSpinner = () => (
     <div className="flex justify-center items-center py-8">
         <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
@@ -56,8 +52,8 @@ const LoadingSpinner = () => (
     </div>
 );
 
+// --- 3. Task Modal Component ---
 
-// --- 3. 核心组件：任务模态窗口 ---
 const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
     const [title, setTitle] = useState('');
     const [importance, setImportance] = useState('普通');
@@ -67,7 +63,7 @@ const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
         if (title.trim()) {
             addTask(title.trim(), importance);
             setTitle('');
-            setImportance('普通'); // 重置重要性
+            setImportance('普通'); 
             onClose();
         }
     };
@@ -78,7 +74,7 @@ const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 transition-opacity duration-300 backdrop-blur-sm" onClick={onClose}>
             <div 
                 className="bg-white rounded-3xl shadow-2xl w-full max-w-lg p-8 transform scale-95 opacity-0 animate-modal-in"
-                onClick={e => e.stopPropagation()} // 阻止点击模态框内容时关闭
+                onClick={e => e.stopPropagation()} 
             >
                 <div className="flex justify-between items-center mb-6 border-b pb-3">
                     <h2 className="text-2xl font-extrabold text-indigo-700">为「{currentGroup}」新增任务</h2>
@@ -133,12 +129,12 @@ const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
     );
 };
 
+// --- 4. AI Breakdown Modal Component ---
 
-// --- 4. 新增组件：AI 建议模态窗口 ---
 const BreakdownModal = ({ isOpen, onClose, title, breakdown, loading }) => {
     if (!isOpen) return null;
     
-    // 简单的 Markdown 换行符渲染
+    // Simple text rendering with <br /> for new lines
     const formattedBreakdown = breakdown.split('\n').map((line, index) => (
         <React.Fragment key={index}>
             {line}
@@ -182,8 +178,8 @@ const BreakdownModal = ({ isOpen, onClose, title, breakdown, loading }) => {
     );
 };
 
+// --- 5. Task Item Component ---
 
-// --- 5. 核心组件：任务列表项 (TaskItem 新增 AI 按钮) ---
 const TaskItem = ({ task, updateTask, deleteTask, onGenerateBreakdown }) => {
     
     const importanceBadge = task.importance === '高' 
@@ -225,12 +221,12 @@ const TaskItem = ({ task, updateTask, deleteTask, onGenerateBreakdown }) => {
             </div>
 
             <div className="flex space-x-2 items-center">
-                 {/* AI 拆解按钮 */}
+                 {/* AI Breakdown Button */}
                 <button
                     onClick={() => onGenerateBreakdown(task.title)}
                     className="p-3 text-purple-600 bg-purple-100 rounded-full hover:bg-purple-500 hover:text-white transition duration-200 flex-shrink-0 shadow-md flex items-center"
                     title="AI 任务拆解"
-                    disabled={task.is_done} // 已完成任务不需拆解
+                    disabled={task.is_done} 
                 >
                     <Sparkles className="w-5 h-5" />
                 </button>
@@ -248,7 +244,8 @@ const TaskItem = ({ task, updateTask, deleteTask, onGenerateBreakdown }) => {
 };
 
 
-// --- 6. 主应用组件 (已修复 Firebase 身份验证逻辑) ---
+// --- 6. Main App Component ---
+
 const App = () => {
     const [db, setDb] = useState(null);
     const [auth, setAuth] = useState(null);
@@ -258,11 +255,11 @@ const App = () => {
     const [error, setError] = useState('');
     const [isAuthReady, setIsAuthReady] = useState(false);
     
-    // 任务组状态
+    // Task group state
     const [currentGroup, setCurrentGroup] = useState(defaultGroups[0]);
     const [isModalOpen, setIsModalOpen] = useState(false);
     
-    // AI 建议状态
+    // AI breakdown state
     const [breakdownState, setBreakdownState] = useState({
         isOpen: false,
         title: '',
@@ -271,11 +268,11 @@ const App = () => {
     });
 
 
-    // --- Gemini API Call Logic (保持不变) ---
+    // --- Gemini API Call Logic ---
     const generateTaskBreakdown = useCallback(async (title) => {
         setBreakdownState({ isOpen: true, title: title, breakdown: '', loading: true });
         
-        const apiKey = ""; // Canvas will provide this in runtime
+        const apiKey = ""; 
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
         
         const systemPrompt = "You are a world-class productivity coach. Given a single task title, your job is to break it down into 3-5 actionable subtasks, provide a short motivational summary, and suggest the best first step. Format the output as a numbered list of steps, followed by the summary and first step on new lines. Do not use any markdown headers.";
@@ -303,7 +300,7 @@ const App = () => {
                 if (response.ok) {
                     const result = await response.json();
                     generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text || '未能生成有效的任务分解。';
-                    break; // Success
+                    break; 
                 } else if (response.status === 429 && i < maxRetries - 1) {
                     await new Promise(resolve => setTimeout(resolve, delay));
                     delay *= 2;
@@ -317,7 +314,7 @@ const App = () => {
                     delay *= 2;
                 } else {
                     generatedText = `无法连接到 AI 服务：${error.message}`;
-                    break; // Max retries or unrecoverable error
+                    break; 
                 }
             }
         }
@@ -330,13 +327,11 @@ const App = () => {
     }, []);
 
 
-    // --- Firebase Auth & Init (修复后的逻辑) ---
+    // --- Firebase Auth & Init ---
     useEffect(() => {
         let unsubscribeAuth = null; 
 
         if (!FIREBASE_CONFIG.apiKey) {
-            // 改进错误信息: 检查配置是否真的存在
-            console.error("Firebase Config Missing. FIREBASE_CONFIG:", FIREBASE_CONFIG);
             setError("错误: Firebase 配置缺失。无法初始化数据库连接。");
             setIsAuthReady(true);
             return; 
@@ -352,13 +347,9 @@ const App = () => {
             const performAuth = async (auth) => {
                 try {
                     if (INITIAL_AUTH_TOKEN) {
-                        // 优先使用提供的 custom token 登录
                         await signInWithCustomToken(auth, INITIAL_AUTH_TOKEN);
-                        console.log("Signed in with Custom Token.");
                     } else {
-                        // 否则使用匿名登录
                         await signInAnonymously(auth);
-                        console.log("Signed in Anonymously.");
                     }
                 } catch (e) {
                     console.error("Firebase Auth Error:", e);
@@ -366,16 +357,15 @@ const App = () => {
                 } 
             };
 
-            // 设置认证状态监听器
+            // Setup auth state listener
             unsubscribeAuth = onAuthStateChanged(authInstance, (user) => {
                 if (user) {
                     setUserId(user.uid);
-                    console.log("User ID set:", user.uid);
                 } else {
-                    // 如果未登录，尝试进行登录 (仅在初始化时触发一次)
+                    // If no user is logged in, attempt to log in
                     performAuth(authInstance);
                 }
-                setIsAuthReady(true); // 无论登录成功与否，标记认证流程已完成
+                setIsAuthReady(true); // Mark auth process as completed
             });
 
             return () => {
@@ -392,9 +382,9 @@ const App = () => {
     }, []);
 
 
-    // --- Firestore Realtime Listener (保持不变) ---
+    // --- Firestore Realtime Listener ---
     useEffect(() => {
-        // 确保在 auth 流程完成前不进行数据查询
+        // Guard clause: Do not proceed until Firebase and user ID are ready
         if (!db || !userId || !isAuthReady) {
             setLoading(false); 
             return;
@@ -406,8 +396,7 @@ const App = () => {
         try {
             const tasksRef = getTasksCollectionRef(db, userId);
             
-            // 查询：过滤当前组，并按是否完成和创建时间排序 
-            // 注意：orderBy('is_done') 和 orderBy('createdAt', 'desc') 可能需要复合索引
+            // Query for tasks in the current group, sorted by completion status and creation time
             const q = query(
                 tasksRef, 
                 where('groupId', '==', currentGroup),
@@ -425,7 +414,6 @@ const App = () => {
             }, (err) => {
                 console.error("Firestore Listen Error:", err);
                 if (err.code === 'failed-precondition') {
-                     // 明确提示需要索引
                      setError("查询设置错误：请检查 Firebase Console 是否已创建复合索引 (groupId, is_done, createdAt)");
                 } else {
                      setError("实时数据同步失败。请检查 Firestore 规则。");
@@ -443,7 +431,7 @@ const App = () => {
     }, [db, userId, isAuthReady, currentGroup]);
 
 
-    // --- Firestore 操作函数 (保持不变) ---
+    // --- Firestore CRUD Operations ---
     const dbOperationsReady = db && userId;
 
     const addTask = useCallback(async (title, importance) => {
@@ -489,7 +477,7 @@ const App = () => {
     }, [db, userId, dbOperationsReady]);
 
 
-    // --- 渲染逻辑 ---
+    // --- Render Logic ---
     const pendingTasks = tasks.filter(t => !t.is_done);
     const completedTasks = tasks.filter(t => t.is_done);
 
@@ -501,21 +489,21 @@ const App = () => {
         );
     }
     
-    // 检查 Auth 状态，提供清晰的用户身份信息
+    // Check Auth status for display
     const userStatus = auth?.currentUser?.isAnonymous ? "匿名用户" : (auth?.currentUser?.uid ? "已登录" : "未登录");
 
     return (
         <div className="min-h-screen bg-gray-50 pb-28 relative font-sans">
-            {/* 统一的 CSS 样式块，包含所有 Keyframe 动画 */}
+            {/* Inline CSS for animations to ensure they are available */}
             <style>{`
-                /* 全局内容淡入效果 */
+                /* Global Content Fade In */
                 @keyframes fadeIn { 
                     from { opacity: 0; } 
                     to { opacity: 1; } 
                 }
                 .animate-global-fade-in { animation: fadeIn 0.5s ease-out forwards; }
 
-                /* 模态框淡入和上滑效果 */
+                /* Modal Fade In/Slide Up */
                 @keyframes modal-in {
                     from { opacity: 0; transform: translateY(20px) scale(0.95); }
                     to { opacity: 1; transform: translateY(0) scale(1); }
@@ -525,14 +513,14 @@ const App = () => {
                 }
             `}</style>
             
-            {/* 顶部标题和分组选择器 */}
+            {/* Header and Group Selector */}
             <header className="bg-gradient-to-r from-indigo-600 to-blue-500 shadow-xl p-5 sticky top-0 z-40">
                 <div className="max-w-2xl mx-auto flex justify-between items-center">
                     <h1 className="text-3xl font-black text-white flex items-center">
                         <LayoutGrid className="w-7 h-7 mr-2" /> 任务板
                     </h1>
                     
-                    {/* 分组切换按钮 */}
+                    {/* Group Switcher */}
                     <div className="flex items-center space-x-2 bg-white/20 p-1 rounded-xl shadow-inner">
                         <span className="text-sm text-gray-100 hidden sm:block">分组:</span>
                         <select
@@ -550,7 +538,7 @@ const App = () => {
             
             <div className="p-4 sm:p-6 max-w-2xl mx-auto animate-global-fade-in">
                 
-                {/* 用户信息和错误/加载状态 */}
+                {/* User Info and Error/Loading Status */}
                 <div className="mt-4 mb-6 text-sm p-4 bg-white rounded-xl shadow-lg border-l-4 border-indigo-400 flex justify-between items-center">
                     <div>
                         <p className="font-bold text-gray-700">当前用户 ({userStatus})</p>
@@ -567,7 +555,7 @@ const App = () => {
                     </div>
                 )}
                 
-                {/* 待办任务列表 */}
+                {/* Pending Tasks List */}
                 <h2 className="text-2xl font-extrabold text-gray-700 mt-8 mb-4 border-b-2 border-indigo-100 pb-2 flex items-center">
                     待办事项 <span className="ml-3 text-indigo-600 text-xl">({pendingTasks.length})</span>
                 </h2>
@@ -591,7 +579,7 @@ const App = () => {
                     ))}
                 </ul>
 
-                {/* 已完成任务列表 */}
+                {/* Completed Tasks List */}
                 <h2 className="text-2xl font-extrabold text-gray-700 mt-10 mb-4 border-b-2 border-indigo-100 pb-2 flex items-center">
                     已完成 <span className="ml-3 text-gray-500 text-xl">({completedTasks.length})</span>
                 </h2>
@@ -613,7 +601,7 @@ const App = () => {
                 </ul>
             </div>
             
-            {/* 浮动操作按钮 (FAB) - 增加动画效果 */}
+            {/* Floating Action Button (FAB) */}
             <button
                 onClick={() => setIsModalOpen(true)}
                 className="fixed bottom-8 right-8 p-5 bg-gradient-to-r from-green-500 to-teal-500 text-white rounded-full shadow-2xl shadow-green-400/50 hover:from-green-600 hover:to-teal-600 transition-all duration-300 transform hover:scale-110 active:scale-105 z-50"
@@ -622,7 +610,7 @@ const App = () => {
                 <Plus className="w-8 h-8 font-bold" />
             </button>
 
-            {/* 任务新增模态窗口 */}
+            {/* Task Add Modal */}
             <TaskModal 
                 isOpen={isModalOpen} 
                 onClose={() => setIsModalOpen(false)} 
@@ -630,7 +618,7 @@ const App = () => {
                 addTask={addTask}
             />
 
-            {/* AI 建议模态窗口 */}
+            {/* AI Breakdown Modal */}
             <BreakdownModal 
                 isOpen={breakdownState.isOpen}
                 onClose={() => setBreakdownState(prev => ({ ...prev, isOpen: false }))}
