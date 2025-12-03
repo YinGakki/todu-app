@@ -18,6 +18,7 @@ import {
     deleteDoc,
     orderBy
 } from 'firebase/firestore';
+// 确保所有 Lucide React 图标都正确导入
 import { Plus, X, Check, Trash2, LayoutGrid, Loader2, Zap, User, Sparkles, XCircle } from 'lucide-react';
 
 // --- 1. Global Configuration and Firebase Setup ---
@@ -25,17 +26,22 @@ const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-todo-app';
 let FIREBASE_CONFIG = {};
 let INITIAL_AUTH_TOKEN = null;
 let CONFIG_ERROR_MESSAGE = '';
-let CONFIG_SOURCE_INFO = '未知配置源';
+let CONFIG_SOURCE_INFO = '未开始配置检查'; // 更新初始值
 
 INITIAL_AUTH_TOKEN = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
+// 用于记录尝试的来源
+const attemptedSources = [];
 
 // --- 尝试方法 1 (首选): 读取独立的全局变量 (兼容 Vercel/Vite 分散注入) ---
-const W = window; // 引用全局对象，以读取注入的环境变量
+// 使用 window 对象读取全局变量是正确的，但应避免在非组件顶层执行复杂的逻辑
+const W = typeof window !== 'undefined' ? window : {}; // 确保在非浏览器环境中也能安全运行
     
 // 尝试使用 VITE 前缀或无前缀的命名
 const API_KEY = W.VITE_FIREBASE_API_KEY || W.FIREBASE_API_KEY || '';
 const PROJECT_ID = W.VITE_FIREBASE_PROJECT_ID || W.FIREBASE_PROJECT_ID || '';
+
+attemptedSources.push('独立全局变量 (检查 VITE_FIREBASE_API_KEY 和 VITE_FIREBASE_PROJECT_ID)');
 
 if (API_KEY && PROJECT_ID) {
     FIREBASE_CONFIG = {
@@ -46,17 +52,20 @@ if (API_KEY && PROJECT_ID) {
         messagingSenderId: W.VITE_FIREBASE_MESSAGING_SENDER_ID || W.FIREBASE_MESSAGING_SENDER_ID,
         appId: W.VITE_FIREBASE_APP_ID || W.FIREBASE_APP_ID
     };
-    CONFIG_SOURCE_INFO = '独立全局变量 (API KEY, PROJECT ID 等)';
+    CONFIG_SOURCE_INFO = '独立全局变量';
 }
 
 // --- 尝试方法 2 (备选): 聚合的 JSON 字符串 (__firebase_config) ---
 if (!FIREBASE_CONFIG.apiKey || !FIREBASE_CONFIG.projectId) {
+    attemptedSources.push('聚合 JSON 字符串 (__firebase_config)');
     try {
-        if (typeof __firebase_config === 'string' && __firebase_config.trim().length > 0) {
-            const parsedConfig = JSON.parse(__firebase_config);
+        // 检查全局变量是否存在且为字符串
+        const configString = typeof __firebase_config !== 'undefined' ? __firebase_config : '';
+        if (configString.trim().length > 0) {
+            const parsedConfig = JSON.parse(configString);
             if (parsedConfig.apiKey && parsedConfig.projectId) {
                 FIREBASE_CONFIG = parsedConfig;
-                CONFIG_SOURCE_INFO = '聚合 JSON 字符串 (__firebase_config)';
+                CONFIG_SOURCE_INFO = '聚合 JSON 字符串';
             }
         }
     } catch (e) {
@@ -67,9 +76,12 @@ if (!FIREBASE_CONFIG.apiKey || !FIREBASE_CONFIG.projectId) {
 
 // --- 最终校验 ---
 if (!FIREBASE_CONFIG.apiKey || !FIREBASE_CONFIG.projectId) {
-    CONFIG_ERROR_MESSAGE = `致命错误：Firebase 配置缺失。已尝试从 ${CONFIG_SOURCE_INFO} 等源加载，但未找到有效的 'apiKey' 和 'projectId' 字段。`;
+    CONFIG_SOURCE_INFO = attemptedSources.join(' | ');
+    CONFIG_ERROR_MESSAGE = `致命错误：Firebase 配置缺失。已尝试从以下来源加载配置但失败：\n${CONFIG_SOURCE_INFO}。\n请确保 'apiKey' 和 'projectId' 字段正确设置。`;
     FIREBASE_CONFIG = {}; // 确保配置对象是空的，阻止后续初始化
 } else {
+    // 设置 Firestore 日志级别以方便调试
+    // setLogLevel('Debug'); // 移除此行，因为它可能不在所有环境中可用
     console.log(`Firebase config successfully loaded via ${CONFIG_SOURCE_INFO}.`);
 }
 
@@ -93,18 +105,18 @@ const LoadingSpinner = () => (
 );
 
 const ConfigError = ({ message, source }) => (
-    <div className="flex h-screen items-center justify-center bg-red-50 p-8">
+    <div className="flex h-screen items-center justify-center bg-gray-50 p-8">
         <div className="bg-white p-10 rounded-xl shadow-2xl border-l-8 border-red-500 max-w-lg text-center">
             <XCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
             <h1 className="text-2xl font-bold text-red-700 mb-3">致命错误：配置缺失</h1>
-            <p className="text-lg text-gray-700 mb-4">
+            <p className="text-lg text-gray-700 mb-4 whitespace-pre-wrap">
                 {message}
             </p>
             <p className="mt-4 text-sm text-gray-500">
                 应用无法启动，因为它缺少或无法解析运行所需的数据库配置。
             </p>
-            <p className="text-sm text-gray-500 mt-2">
-                **尝试配置源:** {source}
+            <p className="text-sm text-gray-500 mt-2 font-mono break-all">
+                **尝试配置源:** <br/>{source}
             </p>
         </div>
     </div>
@@ -192,6 +204,7 @@ const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
 const BreakdownModal = ({ isOpen, onClose, title, breakdown, loading }) => {
     if (!isOpen) return null;
     
+    // 使用 safer split for rendering
     const formattedBreakdown = breakdown.split('\n').map((line, index) => (
         <React.Fragment key={index}>
             {line}
@@ -306,6 +319,7 @@ const TaskItem = ({ task, updateTask, deleteTask, onGenerateBreakdown }) => {
 const App = () => {
     // 检查全局配置错误，如果存在，则直接返回错误 UI
     if (CONFIG_ERROR_MESSAGE) {
+        // ConfigError 现在会显示更详细的 attemptedSources 信息
         return <ConfigError message={CONFIG_ERROR_MESSAGE} source={CONFIG_SOURCE_INFO} />;
     }
 
