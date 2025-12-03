@@ -566,7 +566,24 @@ const App = () => {
 
     // --- Firebase Auth & Init ---
     useEffect(() => {
+        let unsubscribeAuth = () => {};
+        
         try {
+            // === 🔍 强力调试代码开始 ===
+            // 1. 直接检查环境变量是否读取成功
+            const envKey = import.meta.env.VITE_FIREBASE_API_KEY;
+            
+            // 如果读取失败，直接抛出错误，中止后续操作
+            if (!envKey) {
+                throw new Error("严重错误：无法读取 VITE_FIREBASE_API_KEY。\n原因是：环境变量未配置，或配置后未重新部署 (Redeploy)。");
+            }
+
+            // 2. 检查 Config 对象
+            if (!firebaseConfig || !firebaseConfig.apiKey) {
+                 throw new Error("严重错误：firebaseConfig 对象为空或缺少 apiKey。");
+            }
+            // === 🔍 强力调试代码结束 ===
+
             const app = initializeApp(firebaseConfig);
             const firestoreDb = getFirestore(app);
             const authInstance = getAuth(app);
@@ -575,26 +592,24 @@ const App = () => {
             setAuth(authInstance);
 
             // 监听 Auth 状态变化
-            const unsubscribeAuth = onAuthStateChanged(authInstance, (user) => {
+            unsubscribeAuth = onAuthStateChanged(authInstance, (user) => {
                 if (user) {
-                    // 用户已登录 (邮箱/密码)
                     setUserId(user.uid);
-                    console.debug("用户已登录，UID:", user.uid);
                 } else {
-                    // 用户未登录或已登出
                     setUserId(null);
-                    setTasks([]); // 清空任务列表
-                    console.debug("用户未登录。");
+                    setTasks([]); 
                 }
                 setIsAuthReady(true);
-                setLoading(false); // 认证检查完成后解除加载锁定
+                setLoading(false);
             });
-
+            
             return () => unsubscribeAuth();
 
         } catch (e) {
-            console.error("Firebase 初始化失败:", e);
-            setError("Firebase 初始化失败。请检查配置信息。");
+            // 捕获所有初始化错误，并直接弹窗
+            alert(`Firebase 初始化失败！\n\n错误信息：${e.message}`);
+            console.error("Firebase initialization failed:", e);
+            setError(`系统错误: ${e.message}`);
             setIsAuthReady(true);
             setLoading(false);
         }
