@@ -2,8 +2,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
     getAuth, 
-    signInAnonymously, 
-    signInWithCustomToken, 
+    signInWithEmailAndPassword, // 仅保留登录功能
+    signOut,                        
     onAuthStateChanged 
 } from 'firebase/auth';
 import { 
@@ -15,9 +15,15 @@ import {
     doc, 
     setDoc, 
     addDoc, 
-    deleteDoc
+    deleteDoc,
+    setLogLevel 
 } from 'firebase/firestore';
-import { Plus, X, Check, Trash2, LayoutGrid, Zap, Edit3, Save } from 'lucide-react';
+import { 
+    Plus, X, Check, Trash2, LayoutGrid, Zap, Edit3, Save, LogIn, LogOut 
+} from 'lucide-react';
+
+// 设置 Firebase 日志级别为 Debug
+setLogLevel('debug');
 
 // --- 0. Gemini Text API Call Utility (任务分解) ---
 const callGeminiAPI = async (userQuery, systemPrompt = "", retries = 3) => {
@@ -58,30 +64,13 @@ const callGeminiAPI = async (userQuery, systemPrompt = "", retries = 3) => {
     }
 };
 
-// --- 1. Firebase 初始化与全局配置 ---
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-// 使用私有路径存储任务，确保数据与用户绑定
-const getTasksCollectionRef = (db, userId) => {
-    return collection(db, `artifacts/${appId}/users/${userId}/tasks`);
-};
-
-// 预定义任务组
-const defaultGroups = ['个人', '工作', '家庭'];
-
-
-// 简单的 Markdown 渲染器 (用于展示 LLM 输出)
+// 辅助函数 (MarkdownRenderer 和 parseSubtaskCandidates 保持不变)
 const MarkdownRenderer = ({ content }) => {
-    // 简化：将粗体 **text** 转换为 <strong>text</strong>，将换行符转换为 <br/>
-    // 实际项目中会使用更复杂的 markdown 库
     const htmlContent = content
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') // Bold
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') 
         .split('\n').map((line, index) => {
             const isListItem = line.trim().startsWith('* ') || line.trim().startsWith('- ') || /^\d+\./.test(line.trim());
             
-            // Basic list item handling for readability
             if (isListItem) {
                  return <li key={index} className="ml-5 list-disc mb-1 text-gray-700">{line.replace(/^(\* |\- |^\d+\.\s*)/, '')}</li>;
             }
@@ -98,20 +87,15 @@ const MarkdownRenderer = ({ content }) => {
     );
 };
 
-
-// 帮助函数：从 LLM 输出中解析出可用的子任务候选
 const parseSubtaskCandidates = (content) => {
     const lines = content.split('\n');
     const candidates = [];
-    // 匹配 Markdown 列表项 (*, -, 1., 2. 等)
     const regex = /^\s*(\*|\-|\d+\.)\s*(.*?)$/;
 
     lines.forEach(line => {
         const match = line.match(regex);
         if (match) {
-            // 移除粗体 markdown 格式 **text**
             let title = match[2].trim().replace(/\*\*(.*?)\*\*/g, '$1').trim();
-            // 确保标题非空且不包含纯提示性文字
             if (title.length > 0 && !title.includes('步骤') && !title.includes('资源')) {
                  candidates.push(title);
             }
@@ -121,14 +105,120 @@ const parseSubtaskCandidates = (content) => {
 };
 
 
-// --- 2. 核心组件：任务分解模态窗口 (LLM 任务分解) ---
+// --- 1. Firebase 初始化与全局配置 ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// 使用私有路径存储任务
+const getTasksCollectionRef = (db, userId) => {
+    return collection(db, `artifacts/${appId}/users/${userId}/tasks`);
+};
+
+// 预定义任务组
+const defaultGroups = ['个人', '工作', '家庭'];
+
+
+// --- 2. 核心组件：认证表单 (AuthForm) - 纯登录模式 ---
+const AuthForm = ({ auth, setError }) => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    
+    // 强制只进行登录操作
+    const handleLogin = async (e) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setError('');
+
+        try {
+            await signInWithEmailAndPassword(auth, email, password);
+            console.debug("用户登录成功。");
+            // 登录成功后，onAuthStateChanged 会更新 App 状态
+        } catch (e) {
+            console.error("登录操作失败:", e);
+            let errorMessage = "登录失败，请检查邮箱和密码是否正确。";
+            if (e.code) {
+                switch (e.code) {
+                    case 'auth/invalid-email':
+                        errorMessage = '邮箱格式不正确。';
+                        break;
+                    case 'auth/user-not-found':
+                    case 'auth/wrong-password':
+                        errorMessage = '邮箱或密码错误，用户不存在或凭证不匹配。';
+                        break;
+                    case 'auth/too-many-requests':
+                        errorMessage = '登录尝试过多，请稍后重试。';
+                        break;
+                    default:
+                        errorMessage = `登录错误: ${e.code.replace('auth/', '')}`;
+                }
+            }
+            setError(errorMessage);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="flex h-screen items-center justify-center bg-gray-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-8 space-y-6">
+                <h1 className="text-3xl font-bold text-center text-blue-600 flex items-center justify-center">
+                    <LogIn className="w-7 h-7 mr-2"/> 用户登录
+                </h1>
+                <p className="text-center text-gray-500 text-sm">请输入您的注册邮箱和密码以继续</p>
+                
+                {/* 错误提示框 */}
+                {setError && <div className="p-3 mb-4 bg-red-100 text-red-700 rounded-lg">{setError}</div>}
+
+                <form onSubmit={handleLogin} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">邮箱 (Email)</label>
+                        <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition"
+                            placeholder="user@example.com"
+                            required
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">密码 (Password)</label>
+                        <input
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition"
+                            placeholder="输入密码"
+                            required
+                            minLength={6}
+                        />
+                    </div>
+
+                    <button
+                        type="submit"
+                        disabled={isLoading}
+                        className="w-full bg-blue-600 text-white font-semibold py-3 rounded-lg shadow-md hover:bg-blue-700 transition duration-150 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center"
+                    >
+                        {isLoading ? (
+                            <div className="w-5 h-5 border-2 border-t-2 border-white rounded-full animate-spin"></div>
+                        ) : (
+                            '登录'
+                        )}
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+
+// --- 3. 核心组件：任务分解模态窗口 (LLM 任务分解) ---
 const ExpandTaskModal = ({ isOpen, onClose, task, currentGroup, addTask }) => {
     const [generatedContent, setGeneratedContent] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [llmError, setLlmError] = useState(null);
     const [subtaskCandidates, setSubtaskCandidates] = useState([]);
-    
-    // viewMode: 'loading', 'breakdown', 'draft'
     const [viewMode, setViewMode] = useState('loading'); 
     const [draftSubtask, setDraftSubtask] = useState({ title: '', importance: '普通' });
 
@@ -159,7 +249,7 @@ const ExpandTaskModal = ({ isOpen, onClose, task, currentGroup, addTask }) => {
             setViewMode('breakdown');
         } catch (e) {
             setLlmError(e.message);
-            setViewMode('breakdown'); // 即使失败也停在 breakdown 视图，显示错误
+            setViewMode('breakdown'); 
         } finally {
             setIsLoading(false);
         }
@@ -167,7 +257,6 @@ const ExpandTaskModal = ({ isOpen, onClose, task, currentGroup, addTask }) => {
 
     useEffect(() => {
         if (isOpen && task) {
-            // 只有在模态框打开且没有内容时才生成
             if (generatedContent === '' && !isLoading) {
                 generateDetails();
             }
@@ -177,8 +266,6 @@ const ExpandTaskModal = ({ isOpen, onClose, task, currentGroup, addTask }) => {
         }
     }, [isOpen, task, generatedContent, isLoading, generateDetails]);
     
-    // --- 子任务处理逻辑 ---
-    
     const handleSelectCandidate = (candidateTitle) => {
         setDraftSubtask({ title: candidateTitle, importance: '普通' });
         setViewMode('draft');
@@ -186,9 +273,7 @@ const ExpandTaskModal = ({ isOpen, onClose, task, currentGroup, addTask }) => {
     
     const handleCreateSubtask = async () => {
         if (draftSubtask.title.trim()) {
-            // 使用传入的 addTask function 创建任务
             await addTask(draftSubtask.title, draftSubtask.importance);
-            // 重置状态并关闭模态框
             resetState();
             onClose();
         }
@@ -196,8 +281,6 @@ const ExpandTaskModal = ({ isOpen, onClose, task, currentGroup, addTask }) => {
     
     if (!isOpen || !task) return null;
 
-    // --- 模态框内容渲染 ---
-    
     const renderContent = () => {
         if (viewMode === 'loading' || isLoading) {
             return (
@@ -327,7 +410,7 @@ const ExpandTaskModal = ({ isOpen, onClose, task, currentGroup, addTask }) => {
 };
 
 
-// --- 3. 核心组件：任务新增模态窗口 (TaskModal) ---
+// --- 4. 核心组件：任务新增模态窗口 (TaskModal) ---
 const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
     const [title, setTitle] = useState('');
     const [importance, setImportance] = useState('普通');
@@ -390,7 +473,7 @@ const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
 };
 
 
-// --- 4. 核心组件：任务列表项 (TaskItem) ---
+// --- 5. 核心组件：任务列表项 (TaskItem) ---
 const TaskItem = ({ task, updateTask, deleteTask, onExpandClick }) => {
     const importanceColor = task.importance === '高' ? 'border-red-500' : 'border-blue-500';
     const bgColor = task.is_done ? 'bg-gray-100 opacity-70 line-through' : 'bg-white hover:shadow-lg';
@@ -442,9 +525,10 @@ const TaskItem = ({ task, updateTask, deleteTask, onExpandClick }) => {
 };
 
 
-// --- 5. 主应用组件 (App) ---
+// --- 6. 主应用组件 (App) ---
 const App = () => {
     const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null); 
     const [userId, setUserId] = useState(null);
     const [tasks, setTasks] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -464,45 +548,34 @@ const App = () => {
         try {
             const app = initializeApp(firebaseConfig);
             const firestoreDb = getFirestore(app);
-            const auth = getAuth(app);
+            const authInstance = getAuth(app);
+            
             setDb(firestoreDb);
+            setAuth(authInstance);
 
-            // 1. 认证流程：使用自定义令牌或匿名登录
-            const handleAuth = async () => {
-                try {
-                    if (initialAuthToken) {
-                        const userCredential = await signInWithCustomToken(auth, initialAuthToken);
-                        setUserId(userCredential.user.uid);
-                    } else {
-                        const userCredential = await signInAnonymously(auth);
-                        setUserId(userCredential.user.uid);
-                    }
-                } catch (e) {
-                    console.error("Firebase 认证错误:", e);
-                    setError("认证失败。请检查 Firebase 配置。");
-                } finally {
-                    setIsAuthReady(true);
-                }
-            };
-
-            handleAuth();
-
-            // 2. 监听 Auth 状态变化
-            const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+            // 监听 Auth 状态变化
+            const unsubscribeAuth = onAuthStateChanged(authInstance, (user) => {
                 if (user) {
+                    // 用户已登录 (邮箱/密码)
                     setUserId(user.uid);
+                    console.debug("用户已登录，UID:", user.uid);
                 } else {
-                    if (!userId) {
-                         signInAnonymously(auth);
-                    }
+                    // 用户未登录或已登出
+                    setUserId(null);
+                    setTasks([]); // 清空任务列表
+                    console.debug("用户未登录。");
                 }
+                setIsAuthReady(true);
+                setLoading(false); // 认证检查完成后解除加载锁定
             });
 
             return () => unsubscribeAuth();
 
         } catch (e) {
-            console.error("Firebase 初始化错误:", e);
-            setError("Firebase 初始化失败。");
+            console.error("Firebase 初始化失败:", e);
+            setError("Firebase 初始化失败。请检查配置信息。");
+            setIsAuthReady(true);
+            setLoading(false);
         }
     }, []);
 
@@ -510,9 +583,10 @@ const App = () => {
     useEffect(() => {
         // 核心守卫：在 DB 或用户ID未准备好之前，不执行查询
         if (!db || !userId || !isAuthReady) {
+            console.debug("Firestore 监听器等待 DB/UserID/AuthReady...");
             return;
         }
-
+        
         setLoading(true);
         setError('');
         
@@ -521,7 +595,6 @@ const App = () => {
         try {
             const tasksRef = getTasksCollectionRef(db, userId);
             
-            // 使用 where('groupId', '==', currentGroup) 进行过滤查询
             const q = query(
                 tasksRef, 
                 where('groupId', '==', currentGroup)
@@ -534,9 +607,7 @@ const App = () => {
                     ...doc.data()
                 }));
                 
-                // 在客户端（JavaScript）执行排序
                 fetchedTasks.sort((a, b) => {
-                    // 1. 按 is_done 排序：未完成 (false) 排在已完成 (true) 前面
                     if (a.is_done !== b.is_done) {
                         return a.is_done ? 1 : -1;
                     }
@@ -547,9 +618,9 @@ const App = () => {
 
                 setTasks(fetchedTasks);
                 setLoading(false);
-                setError(''); // 成功获取数据后清除旧错误
+                setError('');
+                console.debug("任务数据已同步。");
             }, (err) => {
-                // 异步错误：例如安全规则被拒绝或网络问题
                 console.error("Firestore 实时数据同步错误:", err);
                 setError(`数据同步失败: ${err.message || '请检查网络或权限。'}`);
                 setLoading(false);
@@ -558,11 +629,10 @@ const App = () => {
             return () => unsubscribe();
             
         } catch (e) {
-            // 同步错误：例如 Firestore 函数未加载或参数错误
             console.error("Firestore 查询设置同步错误:", e);
             setError(`查询设置失败。请检查控制台了解详情。`);
             setLoading(false);
-            return () => unsubscribe(); // 确保即使失败也尝试清理
+            return () => unsubscribe();
         }
     }, [db, userId, isAuthReady, currentGroup]);
 
@@ -607,6 +677,19 @@ const App = () => {
         }
     }, [db, userId]);
     
+    // 登出函数
+    const handleSignOut = async () => {
+        if (!auth) return;
+        try {
+            await signOut(auth);
+            setError('');
+            console.debug("用户成功登出。");
+        } catch (e) {
+            console.error("登出失败:", e);
+            setError("登出操作失败。");
+        }
+    };
+    
     // LLM 任务分解操作
     const handleExpandClick = (task) => { 
         setTaskToExpand(task); 
@@ -616,50 +699,61 @@ const App = () => {
 
     // --- 渲染逻辑 ---
 
-    const pendingTasks = tasks.filter(t => !t.is_done);
-    const completedTasks = tasks.filter(t => t.is_done);
-
     if (!isAuthReady) {
         return (
             <div className="flex h-screen items-center justify-center bg-gray-50">
-                <div className="text-xl text-gray-600">正在认证并连接 Firebase...</div>
+                <div className="text-xl text-gray-600">正在检查认证状态...</div>
             </div>
         );
     }
     
+    // 如果用户未登录，显示认证表单 (纯登录模式)
     if (!userId) {
-        return <div className="p-8 text-red-600 font-bold">错误: 无法获取用户身份信息。</div>;
+        return <AuthForm auth={auth} setError={setError} />;
     }
+
+    // 用户已登录，显示主应用界面
+    const pendingTasks = tasks.filter(t => !t.is_done);
+    const completedTasks = tasks.filter(t => t.is_done);
 
     return (
         <div className="min-h-screen bg-gray-50 pb-20 relative">
             
             {/* 顶部标题和分组选择器 */}
             <header className="bg-white shadow-md p-4 sticky top-0 z-40 flex justify-between items-center">
-                <h1 className="text-2xl font-extrabold text-blue-600 flex items-center">
+                <h1 className="text-xl sm:text-2xl font-extrabold text-blue-600 flex items-center">
                     <LayoutGrid className="w-6 h-6 mr-2" /> 任务管理器
                 </h1>
                 
-                {/* 分组切换按钮 */}
+                {/* 右侧控制区 */}
                 <div className="flex items-center space-x-2">
-                    <span className="text-sm text-gray-500 hidden sm:block">切换分组:</span>
+                     {/* 分组切换按钮 */}
                     <select
                         value={currentGroup}
                         onChange={(e) => setCurrentGroup(e.target.value)}
-                        className="p-2 border border-gray-300 rounded-lg bg-white text-gray-700 font-medium transition"
+                        className="p-2 border border-gray-300 rounded-lg bg-white text-gray-700 font-medium transition text-sm"
+                        title="切换任务分组"
                     >
                         {defaultGroups.map(group => (
                             <option key={group} value={group}>{group}</option>
                         ))}
                     </select>
+
+                    {/* 登出按钮 */}
+                    <button
+                        onClick={handleSignOut}
+                        className="p-2 bg-red-500 text-white rounded-lg shadow-md hover:bg-red-600 transition duration-150 flex items-center"
+                        title="登出"
+                    >
+                        <LogOut className="w-5 h-5" />
+                    </button>
                 </div>
             </header>
             
             <div className="p-4 sm:p-6 max-w-2xl mx-auto">
                 {/* 用户信息和错误/加载状态 */}
                 <div className="mb-4 text-sm text-gray-500 p-3 bg-white rounded-lg shadow">
-                    当前用户ID: <code className="break-all text-xs">{userId}</code><br/>
-                    当前分组: <span className="font-semibold text-blue-600">{currentGroup}</span>
+                    当前用户ID: <code className="break-all text-xs">{userId}</code>
                 </div>
 
                 {/* 错误提示框 */}
@@ -681,7 +775,7 @@ const App = () => {
                             task={task} 
                             updateTask={updateTask} 
                             deleteTask={deleteTask} 
-                            onExpandClick={handleExpandClick} // LLM 扩展功能
+                            onExpandClick={handleExpandClick} 
                         />
                     ))}
                 </ul>
@@ -700,7 +794,7 @@ const App = () => {
                             task={task} 
                             updateTask={updateTask} 
                             deleteTask={deleteTask} 
-                            onExpandClick={handleExpandClick} // LLM 扩展功能
+                            onExpandClick={handleExpandClick} 
                         />
                     ))}
                 </ul>
@@ -729,7 +823,7 @@ const App = () => {
                 onClose={() => setIsExpandModalOpen(false)} 
                 task={taskToExpand}
                 currentGroup={currentGroup}
-                addTask={addTask} // 传递 addTask 函数用于创建子任务
+                addTask={addTask} 
             />
         </div>
     );
