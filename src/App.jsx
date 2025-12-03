@@ -24,6 +24,7 @@ import { Plus, X, Check, Trash2, LayoutGrid, Loader2, Zap, User, Sparkles } from
 const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-todo-app';
 let FIREBASE_CONFIG = {};
 let INITIAL_AUTH_TOKEN = null;
+let IS_CONFIG_VALID = false; // 新增配置有效性标记
 
 try {
     // 确保 JSON 解析发生在 try-catch 块内
@@ -31,9 +32,15 @@ try {
         FIREBASE_CONFIG = JSON.parse(__firebase_config);
     }
     INITIAL_AUTH_TOKEN = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+    // **关键检查**: 确保配置包含必要的字段
+    if (FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId) {
+        IS_CONFIG_VALID = true;
+    }
+
 } catch (e) {
     console.error("Firebase environment configuration failed during JSON parsing:", e);
-    // 如果解析失败，FIREBASE_CONFIG 保持为 {}
+    // IS_CONFIG_VALID 保持为 false
 }
 
 // Function to get the correct Firestore collection reference
@@ -255,9 +262,8 @@ const App = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     
-    // isAuthReady 现在由 onAuthStateChanged 严格控制
     const [isAuthReady, setIsAuthReady] = useState(false); 
-    const authCompletedRef = useRef(false); // 确保 isAuthReady 只设置一次
+    const authCompletedRef = useRef(false);
 
     // Task group state
     const [currentGroup, setCurrentGroup] = useState(defaultGroups[0]);
@@ -331,12 +337,20 @@ const App = () => {
     }, []);
 
 
-    // --- Firebase Auth & Init (核心时序修复) ---
+    // --- Firebase Auth & Init (核心时序修复 + 配置校验) ---
     useEffect(() => {
+        // **新增守卫**: 如果配置无效，立即停止加载并设置错误
+        if (!IS_CONFIG_VALID) {
+            setError("初始化失败：Firebase 配置缺失或无效。请确保提供了 apiKey 和 projectId。");
+            setIsAuthReady(true);
+            setLoading(false);
+            return; 
+        }
+
         const initFirebaseAndAuth = async () => {
             let unsubscribeAuth = () => {};
             try {
-                // 1. 初始化 Firebase App
+                // 1. 初始化 Firebase App (如果 IS_CONFIG_VALID 为 true, 这里应该成功)
                 const app = initializeApp(FIREBASE_CONFIG);
                 const firestoreDb = getFirestore(app);
                 const authInstance = getAuth(app);
@@ -369,13 +383,9 @@ const App = () => {
                 
             } catch (e) {
                 console.error("Firebase Initialization/Auth Error:", e);
-                // 提供更清晰的配置错误提示
-                const message = (e.code === 'app/no-app' || e.message.includes('missing or invalid'))
-                    ? "初始化失败：Firebase 配置无效或缺失。请检查控制台错误。"
-                    : `身份验证或初始化失败: ${e.message}`;
-                setError(message);
+                // 如果在 try 块内发生，可能是网络或运行时错误
+                setError(`身份验证或初始化失败: ${e.message}`);
                 
-                // 失败时也必须让 UI 停止加载，否则用户看不到错误
                 if (!authCompletedRef.current) {
                     setIsAuthReady(true);
                     setLoading(false);
@@ -398,9 +408,8 @@ const App = () => {
 
     // --- Firestore Realtime Listener ---
     useEffect(() => {
-        // 守卫子句：确保 Firebase 实例和 userId 都已就绪
+        // 守卫子句：确保 Firebase 实例和 userId 都已就绪 (如果 isAuthReady=true 但 userId=null，则跳过查询)
         if (!db || !userId || !isAuthReady) {
-            // 如果 isAuthReady=true 但 userId=null，则显示未登录状态但跳过查询
             if (isAuthReady) setLoading(false);
             return;
         }
