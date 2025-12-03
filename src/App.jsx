@@ -127,6 +127,27 @@ const AuthForm = ({ auth, setError }) => {
     // 强制只进行登录操作
     const handleLogin = async (e) => {
         e.preventDefault();
+        
+        // --- 调试代码开始 ---
+        // 1. 检查按钮是否真的触发了事件
+        alert("按钮点击成功！开始检查环境...");
+
+        // 2. 检查 Firebase Auth 对象是否存在
+        if (!auth) {
+            alert("严重错误：Auth 对象为空！Firebase 未初始化成功。");
+            return;
+        }
+
+        // 3. 检查 API Key 是否读取到了 (只显示前几位，防止泄露)
+        const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
+        alert(`读取到的 API Key: ${apiKey ? apiKey.slice(0, 5) + '...' : '未读取到 (undefined)'}`);
+    
+        if (!apiKey) {
+            alert("环境配置错误：无法读取 API Key。请检查 Vercel 环境变量设置并重新部署！");
+            return;
+        }
+        // --- 调试代码结束 ---
+        
         setIsLoading(true);
         setError('');
 
