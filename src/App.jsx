@@ -1,111 +1,20 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
-    getAuth, 
-    signInWithEmailAndPassword, // 仅保留登录功能
-    signOut,                        
-    onAuthStateChanged 
+    getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged 
 } from 'firebase/auth';
 import { 
-    getFirestore, 
-    collection, 
-    query, 
-    where, 
-    onSnapshot, 
-    doc, 
-    setDoc, 
-    addDoc, 
-    deleteDoc,
-    setLogLevel 
+    getFirestore, collection, query, where, onSnapshot, 
+    doc, setDoc, addDoc, deleteDoc, updateDoc
 } from 'firebase/firestore';
 import { 
-    Plus, X, Check, Trash2, LayoutGrid, Zap, Edit3, Save, LogIn, LogOut 
+    Plus, X, Check, Trash2, LayoutGrid, Zap, LogOut, 
+    Sun, Moon, Monitor, ChevronDown, ChevronUp, CornerDownRight 
 } from 'lucide-react';
 
-// 设置 Firebase 日志级别为 Debug
-setLogLevel('debug');
+// --- 1. 配置与工具 ---
 
-// --- 0. Gemini Text API Call Utility (任务分解) ---
-const callGeminiAPI = async (userQuery, systemPrompt = "", retries = 3) => {
-    const apiKey = "";
-    const model = 'gemini-2.5-flash-preview-09-2025';
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-    const payload = {
-        contents: [{ parts: [{ text: userQuery }] }],
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-    };
-
-    for (let i = 0; i < retries; i++) {
-        try {
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            if (!response.ok) {
-                throw new Error(`API call failed with status: ${response.status}`);
-            }
-
-            const result = await response.json();
-            const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '未能生成内容。';
-            return { text };
-
-        } catch (error) {
-            console.error(`Attempt ${i + 1} failed:`, error);
-            if (i < retries - 1) {
-                const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
-                await new Promise(resolve => setTimeout(resolve, delay));
-            } else {
-                throw new Error("任务分解 API 调用失败，请稍后重试。");
-            }
-        }
-    }
-};
-
-// 辅助函数 (MarkdownRenderer 和 parseSubtaskCandidates 保持不变)
-const MarkdownRenderer = ({ content }) => {
-    const htmlContent = content
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') 
-        .split('\n').map((line, index) => {
-            const isListItem = line.trim().startsWith('* ') || line.trim().startsWith('- ') || /^\d+\./.test(line.trim());
-            
-            if (isListItem) {
-                 return <li key={index} className="ml-5 list-disc mb-1 text-gray-700">{line.replace(/^(\* |\- |^\d+\.\s*)/, '')}</li>;
-            }
-            
-            return <p key={index} className="mb-2 text-gray-700">{line}</p>;
-        });
-
-    return (
-        <div className="prose max-w-none">
-            <ul className="list-none p-0 m-0">
-                {htmlContent}
-            </ul>
-        </div>
-    );
-};
-
-const parseSubtaskCandidates = (content) => {
-    const lines = content.split('\n');
-    const candidates = [];
-    const regex = /^\s*(\*|\-|\d+\.)\s*(.*?)$/;
-
-    lines.forEach(line => {
-        const match = line.match(regex);
-        if (match) {
-            let title = match[2].trim().replace(/\*\*(.*?)\*\*/g, '$1').trim();
-            if (title.length > 0 && !title.includes('步骤') && !title.includes('资源')) {
-                 candidates.push(title);
-            }
-        }
-    });
-    return candidates;
-};
-
-
-// --- 1. Firebase 初始化与全局配置 ---
+// ✅ 使用正确的 Vercel 环境变量读取方式
 const firebaseConfig = {
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
     authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -114,127 +23,74 @@ const firebaseConfig = {
     messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
     appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
-
-// 确保 appId 有值，否则任务存储路径会出错
 const appId = firebaseConfig.appId || 'default-app-id';
 
-// 使用私有路径存储任务
+// 判断北京时间是否为黑夜 (19:00 - 08:00)
+const isBeijingNight = () => {
+    const now = new Date();
+    // 转换为 UTC 时间戳
+    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+    // 转换为北京时间 (UTC+8)
+    const beijingTime = new Date(utc + (3600000 * 8));
+    const hour = beijingTime.getHours();
+    // 晚上 19点(含)以后 或 早上 8点(不含)以前
+    return hour >= 19 || hour < 8;
+};
+
+// 数据库路径
 const getTasksCollectionRef = (db, userId) => {
     return collection(db, `artifacts/${appId}/users/${userId}/tasks`);
 };
 
-// 预定义任务组
-const defaultGroups = ['个人', '工作', '家庭'];
-
-
-// --- 2. 核心组件：认证表单 (AuthForm) - 纯登录模式 ---
-const AuthForm = ({ auth, setError }) => {
+// --- 2. 登录组件 (美化版) ---
+const AuthForm = ({ auth, error, setError }) => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    
-    // 强制只进行登录操作
+
     const handleLogin = async (e) => {
         e.preventDefault();
-        
-        // --- 调试代码开始 ---
-        // 1. 检查按钮是否真的触发了事件
-        alert("按钮点击成功！开始检查环境...");
-
-        // 2. 检查 Firebase Auth 对象是否存在
-        if (!auth) {
-            alert("严重错误：Auth 对象为空！Firebase 未初始化成功。");
-            return;
-        }
-
-        // 3. 检查 API Key 是否读取到了 (只显示前几位，防止泄露)
-        const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
-        alert(`读取到的 API Key: ${apiKey ? apiKey.slice(0, 5) + '...' : '未读取到 (undefined)'}`);
-    
-        if (!apiKey) {
-            alert("环境配置错误：无法读取 API Key。请检查 Vercel 环境变量设置并重新部署！");
-            return;
-        }
-        // --- 调试代码结束 ---
-        
         setIsLoading(true);
         setError('');
-
         try {
             await signInWithEmailAndPassword(auth, email, password);
-            console.debug("用户登录成功。");
-            // 登录成功后，onAuthStateChanged 会更新 App 状态
         } catch (e) {
-            console.error("登录操作失败:", e);
-            let errorMessage = "登录失败，请检查邮箱和密码是否正确。";
-            if (e.code) {
-                switch (e.code) {
-                    case 'auth/invalid-email':
-                        errorMessage = '邮箱格式不正确。';
-                        break;
-                    case 'auth/user-not-found':
-                    case 'auth/wrong-password':
-                        errorMessage = '邮箱或密码错误，用户不存在或凭证不匹配。';
-                        break;
-                    case 'auth/too-many-requests':
-                        errorMessage = '登录尝试过多，请稍后重试。';
-                        break;
-                    default:
-                        errorMessage = `登录错误: ${e.code.replace('auth/', '')}`;
-                }
-            }
-            setError(errorMessage);
+            setError('登录失败：' + e.message);
         } finally {
             setIsLoading(false);
         }
     };
 
     return (
-        <div className="flex h-screen items-center justify-center bg-gray-50 p-4">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-8 space-y-6">
-                <h1 className="text-3xl font-bold text-center text-blue-600 flex items-center justify-center">
-                    <LogIn className="w-7 h-7 mr-2"/> 用户登录
+        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 p-4">
+            <div className="bg-white/90 backdrop-blur-xl rounded-3xl shadow-2xl w-full max-w-sm p-8 space-y-6 transform transition hover:scale-[1.01] duration-300">
+                <h1 className="text-3xl font-extrabold text-center text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600">
+                    欢迎回来
                 </h1>
-                <p className="text-center text-gray-500 text-sm">请输入您的注册邮箱和密码以继续</p>
-                
-                {/* 错误提示框 */}
-                {setError && <div className="p-3 mb-4 bg-red-100 text-red-700 rounded-lg">{setError}</div>}
-
-                <form onSubmit={handleLogin} className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">邮箱 (Email)</label>
-                        <input
-                            type="email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition"
-                            placeholder="user@example.com"
-                            required
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">密码 (Password)</label>
-                        <input
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition"
-                            placeholder="输入密码"
-                            required
-                            minLength={6}
-                        />
-                    </div>
-
+                {error && <div className="p-3 bg-red-100 text-red-600 text-sm rounded-lg">{error}</div>}
+                <form onSubmit={handleLogin} className="space-y-5">
+                    <input
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className="w-full p-4 bg-gray-50 border-transparent focus:bg-white focus:border-purple-500 focus:ring-0 rounded-xl transition shadow-inner"
+                        placeholder="邮箱 (Email)"
+                        required
+                    />
+                    <input
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full p-4 bg-gray-50 border-transparent focus:bg-white focus:border-purple-500 focus:ring-0 rounded-xl transition shadow-inner"
+                        placeholder="密码 (Password)"
+                        required
+                    />
                     <button
                         type="submit"
                         disabled={isLoading}
-                        className="w-full bg-blue-600 text-white font-semibold py-3 rounded-lg shadow-md hover:bg-blue-700 transition duration-150 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center"
+                        className="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-bold py-4 rounded-xl shadow-lg hover:shadow-xl hover:translate-y-[-2px] transition duration-300 disabled:opacity-70"
                     >
-                        {isLoading ? (
-                            <div className="w-5 h-5 border-2 border-t-2 border-white rounded-full animate-spin"></div>
-                        ) : (
-                            '登录'
-                        )}
+                        {isLoading ? '登录中...' : '立即登录'}
                     </button>
                 </form>
             </div>
@@ -242,637 +98,396 @@ const AuthForm = ({ auth, setError }) => {
     );
 };
 
+// --- 3. 核心组件：增强版任务项 (支持子任务) ---
+const TaskItem = ({ task, updateTask, deleteTask }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+    const [newSubtask, setNewSubtask] = useState('');
 
-// --- 3. 核心组件：任务分解模态窗口 (LLM 任务分解) ---
-const ExpandTaskModal = ({ isOpen, onClose, task, currentGroup, addTask }) => {
-    const [generatedContent, setGeneratedContent] = useState('');
-    const [isLoading, setIsLoading] = useState(false);
-    const [llmError, setLlmError] = useState(null);
-    const [subtaskCandidates, setSubtaskCandidates] = useState([]);
-    const [viewMode, setViewMode] = useState('loading'); 
-    const [draftSubtask, setDraftSubtask] = useState({ title: '', importance: '普通' });
-
-    const resetState = () => {
-        setGeneratedContent('');
-        setLlmError(null);
-        setSubtaskCandidates([]);
-        setViewMode('loading');
-        setDraftSubtask({ title: '', importance: '普通' });
-        setIsLoading(false);
-    }
-    
-    const generateDetails = useCallback(async () => {
-        setIsLoading(true);
-        setLlmError(null);
-        setGeneratedContent('');
-        setSubtaskCandidates([]);
-        setViewMode('loading');
-
-        const userQuery = `请为我的任务：“${task.title}”（属于 ${currentGroup} 组）生成详细的分解步骤、所需资源和完成提示。请以中文输出，并使用Markdown格式，列出 3 到 5 个清晰、可操作的子步骤，用粗体标出。`;
-        const systemPrompt = "你是一位高效的项目经理助理。你的任务是将用户提供的任务分解为清晰、可执行的子步骤和见解。请始终保持专业、简洁和中文的输出。";
-        
-        try {
-            const response = await callGeminiAPI(userQuery, systemPrompt);
-            setGeneratedContent(response.text);
-            const candidates = parseSubtaskCandidates(response.text);
-            setSubtaskCandidates(candidates);
-            setViewMode('breakdown');
-        } catch (e) {
-            setLlmError(e.message);
-            setViewMode('breakdown'); 
-        } finally {
-            setIsLoading(false);
-        }
-    }, [task?.title, currentGroup]);
-
-    useEffect(() => {
-        if (isOpen && task) {
-            if (generatedContent === '' && !isLoading) {
-                generateDetails();
-            }
-        }
-        if (!isOpen) {
-            resetState();
-        }
-    }, [isOpen, task, generatedContent, isLoading, generateDetails]);
-    
-    const handleSelectCandidate = (candidateTitle) => {
-        setDraftSubtask({ title: candidateTitle, importance: '普通' });
-        setViewMode('draft');
-    };
-    
-    const handleCreateSubtask = async () => {
-        if (draftSubtask.title.trim()) {
-            await addTask(draftSubtask.title, draftSubtask.importance);
-            resetState();
-            onClose();
-        }
-    };
-    
-    if (!isOpen || !task) return null;
-
-    const renderContent = () => {
-        if (viewMode === 'loading' || isLoading) {
-            return (
-                <div className="flex flex-col items-center justify-center h-full text-blue-500">
-                    <div className="w-8 h-8 rounded-full border-4 border-t-4 border-blue-500 animate-spin mb-3"></div>
-                    <p>Gemini 正在为您分解任务...</p>
-                </div>
-            );
-        }
-        
-        if (viewMode === 'draft') {
-            return (
-                <div className="space-y-4">
-                    <h3 className="text-xl font-semibold text-purple-600 flex items-center">
-                        <Edit3 className="w-5 h-5 mr-2"/> 微调子任务草稿
-                    </h3>
-                    
-                    <div className="p-4 border border-blue-200 bg-blue-50 rounded-lg">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">子任务标题</label>
-                        <input
-                            type="text"
-                            value={draftSubtask.title}
-                            onChange={(e) => setDraftSubtask({...draftSubtask, title: e.target.value})}
-                            className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition"
-                            placeholder="输入任务标题"
-                            required
-                        />
-                    </div>
-                    
-                    <div className="p-4 border border-blue-200 bg-blue-50 rounded-lg">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">重要程度</label>
-                        <select
-                            value={draftSubtask.importance}
-                            onChange={(e) => setDraftSubtask({...draftSubtask, importance: e.target.value})}
-                            className="w-full p-2 border border-gray-300 rounded-lg bg-white focus:ring-blue-500 focus:border-blue-500 transition"
-                        >
-                            <option value="高">高</option>
-                            <option value="普通">普通</option>
-                        </select>
-                    </div>
-                    
-                    <div className="flex justify-between pt-2">
-                        <button
-                            onClick={() => setViewMode('breakdown')}
-                            className="text-gray-600 hover:text-gray-800 transition text-sm"
-                        >
-                            ← 返回分解步骤
-                        </button>
-                        <button
-                            onClick={handleCreateSubtask}
-                            disabled={!draftSubtask.title.trim()}
-                            className="flex items-center bg-green-500 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-green-600 transition duration-150 disabled:bg-gray-400"
-                        >
-                            <Save className="w-5 h-5 mr-2"/> 确认并创建子任务
-                        </button>
-                    </div>
-                </div>
-            );
-        }
-
-        if (viewMode === 'breakdown') {
-            return (
-                <div className="space-y-4">
-                    {llmError && (
-                        <p className="p-3 bg-red-100 text-red-600 rounded-lg">LLM 调用失败: {llmError}</p>
-                    )}
-                    
-                    <div className="p-4 border border-gray-200 rounded-lg bg-white">
-                        <h3 className="text-lg font-semibold text-gray-700 mb-2">原始分解结果 (仅供参考):</h3>
-                        <MarkdownRenderer content={generatedContent} />
-                    </div>
-                    
-                    {subtaskCandidates.length > 0 && (
-                        <div>
-                            <h3 className="text-lg font-bold text-blue-600 mb-3">
-                                💡 选择一个子步骤创建任务:
-                            </h3>
-                            <div className="space-y-2">
-                                {subtaskCandidates.map((candidate, index) => (
-                                    <button 
-                                        key={index}
-                                        onClick={() => handleSelectCandidate(candidate)}
-                                        className="w-full text-left p-3 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition duration-150 flex justify-between items-center"
-                                    >
-                                        <span className="text-gray-800 font-medium">
-                                            {candidate}
-                                        </span>
-                                        <span className="text-indigo-600 font-semibold text-sm">选择 →</span>
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                    
-                    <div className="flex justify-end pt-4">
-                         <button
-                            onClick={generateDetails}
-                            disabled={isLoading}
-                            className="flex items-center bg-blue-500 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-blue-600 transition duration-150"
-                        >
-                            重新生成分解 ✨
-                        </button>
-                    </div>
-                </div>
-            );
-        }
-    }
-
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50">
-            <div className="bg-gray-50 rounded-xl shadow-2xl w-full max-w-2xl p-6 animate-fade-in-up">
-                <div className="flex justify-between items-start mb-4 border-b pb-3">
-                    <h2 className="text-2xl font-bold text-blue-600 flex items-center">
-                        <Zap className="w-6 h-6 mr-2"/> 任务分解：{task.title}
-                    </h2>
-                    <button onClick={onClose} className="p-2 rounded-full hover:bg-gray-200 transition">
-                        <X className="w-6 h-6 text-gray-500" />
-                    </button>
-                </div>
-                
-                {renderContent()}
-                
-            </div>
-        </div>
-    );
-};
-
-
-// --- 4. 核心组件：任务新增模态窗口 (TaskModal) ---
-const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
-    const [title, setTitle] = useState('');
-    const [importance, setImportance] = useState('普通');
-
-    const handleSubmit = (e) => {
+    // 添加子任务
+    const handleAddSubtask = async (e) => {
         e.preventDefault();
-        if (title.trim()) {
-            addTask(title.trim(), importance);
-            setTitle('');
-            onClose();
-        }
+        if (!newSubtask.trim()) return;
+        
+        const subItem = {
+            id: Date.now().toString(),
+            title: newSubtask,
+            is_done: false
+        };
+        
+        const updatedSubtasks = [...(task.subtasks || []), subItem];
+        await updateTask(task.id, { subtasks: updatedSubtasks });
+        setNewSubtask('');
     };
 
-    if (!isOpen) return null;
+    // 切换子任务状态
+    const toggleSubtask = async (subId) => {
+        const updatedSubtasks = task.subtasks.map(sub => 
+            sub.id === subId ? { ...sub, is_done: !sub.is_done } : sub
+        );
+        await updateTask(task.id, { subtasks: updatedSubtasks });
+    };
+
+    // 删除子任务
+    const removeSubtask = async (subId) => {
+        const updatedSubtasks = task.subtasks.filter(sub => sub.id !== subId);
+        await updateTask(task.id, { subtasks: updatedSubtasks });
+    };
+
+    const completedSubtasks = task.subtasks?.filter(s => s.is_done).length || 0;
+    const totalSubtasks = task.subtasks?.length || 0;
+    const progress = totalSubtasks === 0 ? 0 : (completedSubtasks / totalSubtasks) * 100;
 
     return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 animate-fade-in-up">
-                <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-bold text-gray-800">新增任务到「{currentGroup}」</h2>
-                    <button onClick={onClose} className="p-2 rounded-full hover:bg-gray-100 transition">
-                        <X className="w-5 h-5 text-gray-500" />
-                    </button>
-                </div>
-                
-                <form onSubmit={handleSubmit}>
-                    <div className="mb-4">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">任务标题</label>
-                        <input
-                            type="text"
-                            value={title}
-                            onChange={(e) => setTitle(e.target.value)}
-                            placeholder="输入任务描述"
-                            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition"
-                            required
-                        />
-                    </div>
-                    <div className="mb-6">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">重要程度</label>
-                        <select
-                            value={importance}
-                            onChange={(e) => setImportance(e.target.value)}
-                            className="w-full p-3 border border-gray-300 rounded-lg bg-white focus:ring-blue-500 focus:border-blue-500 transition"
+        <li className="group mb-4 animate-slide-in">
+            {/* 主卡片 */}
+            <div className={`
+                relative flex flex-col p-5 rounded-2xl transition-all duration-300 border
+                ${task.is_done 
+                    ? 'bg-gray-100/80 dark:bg-gray-800/50 border-transparent opacity-75' 
+                    : 'bg-white/80 dark:bg-gray-800/80 hover:bg-white dark:hover:bg-gray-750 border-white/20 hover:shadow-xl shadow-sm backdrop-blur-md'
+                }
+            `}>
+                <div className="flex items-start justify-between">
+                    <div className="flex items-center flex-1 cursor-pointer" onClick={() => setIsExpanded(!isExpanded)}>
+                        {/* 进度环或勾选框 */}
+                        <div 
+                            onClick={(e) => { e.stopPropagation(); updateTask(task.id, { is_done: !task.is_done }); }}
+                            className={`
+                                flex-shrink-0 w-6 h-6 rounded-full border-2 mr-3 flex items-center justify-center transition-colors
+                                ${task.is_done 
+                                    ? 'bg-green-500 border-green-500' 
+                                    : 'border-gray-400 hover:border-blue-500 dark:border-gray-500'
+                                }
+                            `}
                         >
-                            <option value="高">高</option>
-                            <option value="普通">普通</option>
-                        </select>
+                            {task.is_done && <Check className="w-4 h-4 text-white" />}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                            <h3 className={`text-lg font-medium truncate transition-all ${task.is_done ? 'text-gray-500 line-through decoration-2 decoration-gray-400' : 'text-gray-800 dark:text-gray-100'}`}>
+                                {task.title}
+                            </h3>
+                            {totalSubtasks > 0 && (
+                                <div className="flex items-center mt-1 space-x-2">
+                                    <div className="h-1.5 flex-1 max-w-[100px] bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                                        <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${progress}%` }}></div>
+                                    </div>
+                                    <span className="text-xs text-gray-500 dark:text-gray-400">{completedSubtasks}/{totalSubtasks}</span>
+                                </div>
+                            )}
+                        </div>
                     </div>
-                    
-                    <button
-                        type="submit"
-                        className="w-full bg-blue-600 text-white font-semibold py-3 rounded-lg shadow-md hover:bg-blue-700 transition duration-150"
-                    >
-                        添加任务
-                    </button>
-                </form>
-            </div>
-        </div>
-    );
-};
 
+                    <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
+                        <button 
+                            onClick={() => setIsExpanded(!isExpanded)}
+                            className="p-2 text-gray-400 hover:text-blue-500 transition rounded-full hover:bg-gray-100 dark:hover:bg-gray-700"
+                        >
+                            {isExpanded ? <ChevronUp className="w-5 h-5"/> : <ChevronDown className="w-5 h-5"/>}
+                        </button>
+                        <button
+                            onClick={() => deleteTask(task.id)}
+                            className="p-2 text-gray-400 hover:text-red-500 transition rounded-full hover:bg-red-50 dark:hover:bg-red-900/30"
+                        >
+                            <Trash2 className="w-5 h-5" />
+                        </button>
+                    </div>
+                </div>
 
-// --- 5. 核心组件：任务列表项 (TaskItem) ---
-const TaskItem = ({ task, updateTask, deleteTask, onExpandClick }) => {
-    const importanceColor = task.importance === '高' ? 'border-red-500' : 'border-blue-500';
-    const bgColor = task.is_done ? 'bg-gray-100 opacity-70 line-through' : 'bg-white hover:shadow-lg';
-    const titleColor = task.is_done ? 'text-gray-500' : 'text-gray-800';
-
-    return (
-        <li 
-            className={`flex items-center justify-between p-4 mb-3 rounded-xl shadow transition duration-200 ease-in-out border-l-4 ${importanceColor} ${bgColor}`}
-        >
-            <div className="flex-1 min-w-0">
-                <p className={`text-lg font-semibold truncate ${titleColor}`}>{task.title}</p>
-                <p className="text-sm text-gray-400 mt-1">
-                    重要性: <span className={task.importance === '高' ? 'text-red-500 font-medium' : 'text-blue-500'}>{task.importance}</span>
-                </p>
-            </div>
-
-            <div className="flex space-x-2 ml-4 items-center">
-                
-                {/* LLM 任务分解按钮 */}
-                {!task.is_done && (
-                    <button
-                        onClick={() => onExpandClick(task)}
-                        className="p-1.5 text-white bg-purple-500 rounded-full shadow-md hover:bg-purple-600 transition"
-                        title="LLM 任务分解 ✨"
-                    >
-                        <Zap className="w-4 h-4" />
-                    </button>
-                )}
-
-                {!task.is_done && (
-                    <button
-                        onClick={() => updateTask(task.id, { is_done: true })}
-                        className="p-2 text-white bg-green-500 rounded-full shadow-md hover:bg-green-600 transition"
-                        title="标记完成"
-                    >
-                        <Check className="w-5 h-5" />
-                    </button>
-                )}
-                <button
-                    onClick={() => deleteTask(task.id)}
-                    className="p-2 text-white bg-red-500 rounded-full shadow-md hover:bg-red-600 transition"
-                    title="删除任务"
-                >
-                    <Trash2 className="w-5 h-5" />
-                </button>
+                {/* 子任务区域 */}
+                <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isExpanded ? 'max-h-96 mt-4 opacity-100' : 'max-h-0 opacity-0'}`}>
+                    <div className="pl-9 space-y-2">
+                        {task.subtasks?.map(sub => (
+                            <div key={sub.id} className="flex items-center justify-between group/sub">
+                                <div 
+                                    onClick={() => toggleSubtask(sub.id)}
+                                    className="flex items-center flex-1 cursor-pointer"
+                                >
+                                    <div className={`w-4 h-4 border rounded mr-3 flex items-center justify-center transition ${sub.is_done ? 'bg-purple-500 border-purple-500' : 'border-gray-300 dark:border-gray-600'}`}>
+                                        {sub.is_done && <Check className="w-3 h-3 text-white" />}
+                                    </div>
+                                    <span className={`text-sm ${sub.is_done ? 'text-gray-400 line-through' : 'text-gray-700 dark:text-gray-300'}`}>
+                                        {sub.title}
+                                    </span>
+                                </div>
+                                <button onClick={() => removeSubtask(sub.id)} className="opacity-0 group-hover/sub:opacity-100 text-gray-400 hover:text-red-500">
+                                    <X className="w-3 h-3" />
+                                </button>
+                            </div>
+                        ))}
+                        
+                        <form onSubmit={handleAddSubtask} className="flex items-center mt-3">
+                            <CornerDownRight className="w-4 h-4 text-gray-400 mr-2" />
+                            <input
+                                type="text"
+                                value={newSubtask}
+                                onChange={(e) => setNewSubtask(e.target.value)}
+                                placeholder="添加子步骤..."
+                                className="flex-1 bg-transparent border-b border-gray-200 dark:border-gray-700 py-1 text-sm focus:border-blue-500 focus:outline-none dark:text-gray-200 transition"
+                            />
+                            <button type="submit" disabled={!newSubtask.trim()} className="ml-2 text-blue-500 text-sm font-medium hover:text-blue-600 disabled:opacity-50">
+                                添加
+                            </button>
+                        </form>
+                    </div>
+                </div>
             </div>
         </li>
     );
 };
 
-
-// --- 6. 主应用组件 (App) ---
+// --- 4. 主程序 ---
 const App = () => {
     const [db, setDb] = useState(null);
-    const [auth, setAuth] = useState(null); 
+    const [auth, setAuth] = useState(null);
     const [userId, setUserId] = useState(null);
     const [tasks, setTasks] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
-    const [isAuthReady, setIsAuthReady] = useState(false);
+    const [currentGroup, setCurrentGroup] = useState('个人');
+    const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
     
-    // 任务组状态
-    const [currentGroup, setCurrentGroup] = useState(defaultGroups[0]);
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    
-    // LLM 扩展功能状态
-    const [isExpandModalOpen, setIsExpandModalOpen] = useState(false);
-    const [taskToExpand, setTaskToExpand] = useState(null);
+    // 主题控制 state ('light' | 'dark' | 'auto')
+    const [themeMode, setThemeMode] = useState('auto');
+    const [newTaskTitle, setNewTaskTitle] = useState('');
 
-    // --- Firebase Auth & Init ---
+    // 初始化 Firebase
     useEffect(() => {
-        let unsubscribeAuth = () => {};
-        
         try {
-            // === 🔍 强力调试代码开始 ===
-            // 1. 直接检查环境变量是否读取成功
-            const envKey = import.meta.env.VITE_FIREBASE_API_KEY;
-            
-            // 如果读取失败，直接抛出错误，中止后续操作
-            if (!envKey) {
-                throw new Error("严重错误：无法读取 VITE_FIREBASE_API_KEY。\n原因是：环境变量未配置，或配置后未重新部署 (Redeploy)。");
-            }
-
-            // 2. 检查 Config 对象
-            if (!firebaseConfig || !firebaseConfig.apiKey) {
-                 throw new Error("严重错误：firebaseConfig 对象为空或缺少 apiKey。");
-            }
-            // === 🔍 强力调试代码结束 ===
-
             const app = initializeApp(firebaseConfig);
-            const firestoreDb = getFirestore(app);
-            const authInstance = getAuth(app);
-            
-            setDb(firestoreDb);
-            setAuth(authInstance);
-
-            // 监听 Auth 状态变化
-            unsubscribeAuth = onAuthStateChanged(authInstance, (user) => {
-                if (user) {
-                    setUserId(user.uid);
-                } else {
-                    setUserId(null);
-                    setTasks([]); 
-                }
-                setIsAuthReady(true);
-                setLoading(false);
-            });
-            
-            return () => unsubscribeAuth();
-
+            setDb(getFirestore(app));
+            setAuth(getAuth(app));
+            onAuthStateChanged(getAuth(app), (user) => setUserId(user ? user.uid : null));
         } catch (e) {
-            // 捕获所有初始化错误，并直接弹窗
-            alert(`Firebase 初始化失败！\n\n错误信息：${e.message}`);
-            console.error("Firebase initialization failed:", e);
-            setError(`系统错误: ${e.message}`);
-            setIsAuthReady(true);
-            setLoading(false);
+            console.error("Firebase Init Error:", e);
         }
     }, []);
 
-    // --- Firestore Realtime Listener ---
+    // 监听任务数据
     useEffect(() => {
-        // 核心守卫：在 DB 或用户ID未准备好之前，不执行查询
-        if (!db || !userId || !isAuthReady) {
-            console.debug("Firestore 监听器等待 DB/UserID/AuthReady...");
-            return;
-        }
-        
-        setLoading(true);
-        setError('');
-        
-        let unsubscribe = () => {};
-
-        try {
-            const tasksRef = getTasksCollectionRef(db, userId);
-            
-            const q = query(
-                tasksRef, 
-                where('groupId', '==', currentGroup)
-            );
-            
-            // 实时监听器
-            unsubscribe = onSnapshot(q, (snapshot) => {
-                const fetchedTasks = snapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...doc.data()
-                }));
-                
-                fetchedTasks.sort((a, b) => {
-                    if (a.is_done !== b.is_done) {
-                        return a.is_done ? 1 : -1;
-                    }
-                    if (a.title < b.title) return -1;
-                    if (a.title > b.title) return 1;
-                    return 0;
-                });
-
-                setTasks(fetchedTasks);
-                setLoading(false);
-                setError('');
-                console.debug("任务数据已同步。");
-            }, (err) => {
-                console.error("Firestore 实时数据同步错误:", err);
-                setError(`数据同步失败: ${err.message || '请检查网络或权限。'}`);
-                setLoading(false);
-            });
-
-            return () => unsubscribe();
-            
-        } catch (e) {
-            console.error("Firestore 查询设置同步错误:", e);
-            setError(`查询设置失败。请检查控制台了解详情。`);
-            setLoading(false);
-            return () => unsubscribe();
-        }
-    }, [db, userId, isAuthReady, currentGroup]);
-
-
-    // --- Firestore 操作函数 ---
-    const addTask = useCallback(async (title, importance) => {
         if (!db || !userId) return;
-        try {
-            await addDoc(getTasksCollectionRef(db, userId), {
-                title,
-                importance,
-                is_done: false,
-                groupId: currentGroup,
-                userId: userId,
-                createdAt: new Date()
+        const q = query(getTasksCollectionRef(db, userId), where('groupId', '==', currentGroup));
+        return onSnapshot(q, (snapshot) => {
+            const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            // 排序：未完成在前 -> 创建时间倒序
+            fetched.sort((a, b) => {
+                if (a.is_done !== b.is_done) return a.is_done ? 1 : -1;
+                return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
             });
-        } catch (e) {
-            console.error("Error adding task:", e);
-            setError("添加任务失败。");
-        }
+            setTasks(fetched);
+        });
     }, [db, userId, currentGroup]);
 
-    const updateTask = useCallback(async (taskId, updates) => {
-        if (!db || !userId) return;
-        try {
-            const taskDocRef = doc(getTasksCollectionRef(db, userId), taskId);
-            await setDoc(taskDocRef, updates, { merge: true });
-        } catch (e) {
-            console.error("Error updating task:", e);
-            setError("更新任务失败。");
-        }
-    }, [db, userId]);
+    // 主题逻辑
+    useEffect(() => {
+        const root = window.document.documentElement;
+        const applyTheme = () => {
+            let isDark = false;
+            if (themeMode === 'dark') isDark = true;
+            else if (themeMode === 'light') isDark = false;
+            else if (themeMode === 'auto') isDark = isBeijingNight();
 
-    const deleteTask = useCallback(async (taskId) => {
-        if (!db || !userId) return;
-        try {
-            const taskDocRef = doc(getTasksCollectionRef(db, userId), taskId);
-            await deleteDoc(taskDocRef);
-        } catch (e) {
-            console.error("Error deleting task:", e);
-            setError("删除任务失败。");
+            if (isDark) root.classList.add('dark');
+            else root.classList.remove('dark');
+        };
+        
+        applyTheme();
+        // 如果是 auto，每分钟检查一次时间
+        let interval;
+        if (themeMode === 'auto') {
+            interval = setInterval(applyTheme, 60000);
         }
-    }, [db, userId]);
-    
-    // 登出函数
-    const handleSignOut = async () => {
-        if (!auth) return;
-        try {
-            await signOut(auth);
-            setError('');
-            console.debug("用户成功登出。");
-        } catch (e) {
-            console.error("登出失败:", e);
-            setError("登出操作失败。");
-        }
-    };
-    
-    // LLM 任务分解操作
-    const handleExpandClick = (task) => { 
-        setTaskToExpand(task); 
-        setIsExpandModalOpen(true); 
+        return () => clearInterval(interval);
+    }, [themeMode]);
+
+    // CRUD 操作
+    const addTask = async (e) => {
+        e.preventDefault();
+        if (!newTaskTitle.trim()) return;
+        await addDoc(getTasksCollectionRef(db, userId), {
+            title: newTaskTitle.trim(),
+            is_done: false,
+            groupId: currentGroup,
+            subtasks: [], // 初始化子任务数组
+            userId,
+            createdAt: new Date()
+        });
+        setNewTaskTitle('');
+        setIsTaskModalOpen(false);
     };
 
+    const updateTask = async (taskId, updates) => {
+        await updateDoc(doc(getTasksCollectionRef(db, userId), taskId), updates);
+    };
 
-    // --- 渲染逻辑 ---
+    const deleteTask = async (taskId) => {
+        if (confirm("确定要删除这个任务吗？")) {
+            await deleteDoc(doc(getTasksCollectionRef(db, userId), taskId));
+        }
+    };
 
-    if (!isAuthReady) {
-        return (
-            <div className="flex h-screen items-center justify-center bg-gray-50">
-                <div className="text-xl text-gray-600">正在检查认证状态...</div>
-            </div>
-        );
-    }
-    
-    // 如果用户未登录，显示认证表单 (纯登录模式)
-    if (!userId) {
-        return <AuthForm auth={auth} setError={setError} />;
-    }
+    if (!userId) return <AuthForm auth={auth} error="" setError={() => {}} />;
 
-    // 用户已登录，显示主应用界面
     const pendingTasks = tasks.filter(t => !t.is_done);
     const completedTasks = tasks.filter(t => t.is_done);
 
+    // 渲染主题切换按钮
+    const ThemeToggle = () => (
+        <div className="bg-gray-100 dark:bg-gray-700 p-1 rounded-full flex items-center space-x-1 shadow-inner">
+            {[
+                { mode: 'light', icon: Sun, label: '亮' },
+                { mode: 'auto', icon: Monitor, label: '自动' },
+                { mode: 'dark', icon: Moon, label: '暗' },
+            ].map(({ mode, icon: Icon }) => (
+                <button
+                    key={mode}
+                    onClick={() => setThemeMode(mode)}
+                    className={`p-1.5 rounded-full transition-all duration-300 ${
+                        themeMode === mode 
+                        ? 'bg-white dark:bg-gray-600 text-yellow-500 shadow-sm scale-110' 
+                        : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+                    }`}
+                    title={mode}
+                >
+                    <Icon className="w-4 h-4" />
+                </button>
+            ))}
+        </div>
+    );
+
     return (
-        <div className="min-h-screen bg-gray-50 pb-20 relative">
-            
-            {/* 顶部标题和分组选择器 */}
-            <header className="bg-white shadow-md p-4 sticky top-0 z-40 flex justify-between items-center">
-                <h1 className="text-xl sm:text-2xl font-extrabold text-blue-600 flex items-center">
-                    <LayoutGrid className="w-6 h-6 mr-2" /> 任务管理器
-                </h1>
-                
-                {/* 右侧控制区 */}
-                <div className="flex items-center space-x-2">
-                     {/* 分组切换按钮 */}
-                    <select
-                        value={currentGroup}
-                        onChange={(e) => setCurrentGroup(e.target.value)}
-                        className="p-2 border border-gray-300 rounded-lg bg-white text-gray-700 font-medium transition text-sm"
-                        title="切换任务分组"
-                    >
-                        {defaultGroups.map(group => (
-                            <option key={group} value={group}>{group}</option>
-                        ))}
-                    </select>
-
-                    {/* 登出按钮 */}
-                    <button
-                        onClick={handleSignOut}
-                        className="p-2 bg-red-500 text-white rounded-lg shadow-md hover:bg-red-600 transition duration-150 flex items-center"
-                        title="登出"
-                    >
-                        <LogOut className="w-5 h-5" />
-                    </button>
-                </div>
-            </header>
-            
-            <div className="p-4 sm:p-6 max-w-2xl mx-auto">
-                {/* 用户信息和错误/加载状态 */}
-                <div className="mb-4 text-sm text-gray-500 p-3 bg-white rounded-lg shadow">
-                    当前用户ID: <code className="break-all text-xs">{userId}</code>
-                </div>
-
-                {/* 错误提示框 */}
-                {error && <div className="p-3 mb-4 bg-red-100 text-red-700 rounded-lg">{error}</div>}
-                
-                {/* 待办任务列表 */}
-                <h2 className="text-xl font-bold text-gray-700 mt-6 mb-3 border-b pb-2">
-                    🚀 待办 ({pendingTasks.length})
-                </h2>
-                {loading && <p className="text-blue-500 p-4">正在加载 {currentGroup} 任务...</p>}
-                
-                <ul className="task-list">
-                    {pendingTasks.length === 0 && !loading && (
-                        <li className="text-gray-500 p-4 bg-white rounded-xl shadow">暂无待办任务。</li>
-                    )}
-                    {pendingTasks.map(task => (
-                        <TaskItem 
-                            key={task.id} 
-                            task={task} 
-                            updateTask={updateTask} 
-                            deleteTask={deleteTask} 
-                            onExpandClick={handleExpandClick} 
-                        />
-                    ))}
-                </ul>
-
-                {/* 已完成任务列表 */}
-                <h2 className="text-xl font-bold text-gray-700 mt-8 mb-3 border-b pb-2">
-                    ✅ 已完成 ({completedTasks.length})
-                </h2>
-                <ul className="task-list">
-                    {completedTasks.length === 0 && (
-                        <li className="text-gray-500 p-4 bg-white rounded-xl shadow">暂无已完成任务。</li>
-                    )}
-                    {completedTasks.map(task => (
-                        <TaskItem 
-                            key={task.id} 
-                            task={task} 
-                            updateTask={updateTask} 
-                            deleteTask={deleteTask} 
-                            onExpandClick={handleExpandClick} 
-                        />
-                    ))}
-                </ul>
+        <div className="min-h-screen transition-colors duration-500 bg-gray-50 dark:bg-gray-900 font-sans selection:bg-blue-200 dark:selection:bg-blue-900">
+            {/* 动态背景装饰 */}
+            <div className="fixed inset-0 pointer-events-none overflow-hidden">
+                <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-400/20 rounded-full blur-[100px] animate-pulse"></div>
+                <div className="absolute bottom-[10%] right-[-5%] w-[30%] h-[30%] bg-purple-400/20 rounded-full blur-[100px] animate-pulse delay-1000"></div>
             </div>
-            
-            {/* 浮动操作按钮 (FAB) */}
+
+            <div className="relative z-10 max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
+                {/* 顶部导航 */}
+                <header className="flex flex-col sm:flex-row justify-between items-center mb-10 gap-4">
+                    <div className="flex items-center space-x-3">
+                        <div className="bg-gradient-to-tr from-blue-600 to-purple-600 p-2.5 rounded-xl shadow-lg">
+                            <LayoutGrid className="w-6 h-6 text-white" />
+                        </div>
+                        <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-gray-800 to-gray-600 dark:from-white dark:to-gray-300">
+                            任务管理器
+                        </h1>
+                    </div>
+                    
+                    <div className="flex items-center space-x-4 bg-white/50 dark:bg-gray-800/50 backdrop-blur-md p-2 rounded-2xl border border-white/20 shadow-sm">
+                        <ThemeToggle />
+                        <div className="h-6 w-px bg-gray-300 dark:bg-gray-600"></div>
+                        <select
+                            value={currentGroup}
+                            onChange={(e) => setCurrentGroup(e.target.value)}
+                            className="bg-transparent text-sm font-medium text-gray-700 dark:text-gray-200 outline-none cursor-pointer hover:text-blue-600 transition"
+                        >
+                            {['个人', '工作', '家庭'].map(g => <option key={g} value={g} className="dark:bg-gray-800">{g}</option>)}
+                        </select>
+                        <button onClick={() => signOut(auth)} className="text-gray-400 hover:text-red-500 transition p-1">
+                            <LogOut className="w-5 h-5" />
+                        </button>
+                    </div>
+                </header>
+
+                {/* 统计概览卡片 */}
+                <div className="grid grid-cols-3 gap-4 mb-8">
+                    <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl p-4 text-white shadow-lg shadow-blue-500/20 transform hover:scale-[1.02] transition">
+                        <p className="text-blue-100 text-xs font-medium uppercase tracking-wider mb-1">待办</p>
+                        <p className="text-3xl font-bold">{pendingTasks.length}</p>
+                    </div>
+                    <div className="bg-white dark:bg-gray-800 rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-gray-700">
+                        <p className="text-gray-400 text-xs font-medium uppercase tracking-wider mb-1">已完成</p>
+                        <p className="text-3xl font-bold text-gray-800 dark:text-white">{completedTasks.length}</p>
+                    </div>
+                    <div className="bg-white dark:bg-gray-800 rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-gray-700">
+                        <p className="text-gray-400 text-xs font-medium uppercase tracking-wider mb-1">进度</p>
+                        <p className="text-3xl font-bold text-green-500">
+                            {tasks.length > 0 ? Math.round((completedTasks.length / tasks.length) * 100) : 0}%
+                        </p>
+                    </div>
+                </div>
+
+                {/* 任务列表 */}
+                <div className="space-y-8">
+                    <section>
+                        <h2 className="text-lg font-bold text-gray-700 dark:text-gray-200 mb-4 flex items-center">
+                            待办事项 <span className="ml-2 px-2 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 text-xs rounded-full">{pendingTasks.length}</span>
+                        </h2>
+                        {pendingTasks.length === 0 ? (
+                            <div className="text-center py-10 bg-white/50 dark:bg-gray-800/30 rounded-2xl border border-dashed border-gray-300 dark:border-gray-700">
+                                <p className="text-gray-400 dark:text-gray-500">🎉 太棒了，所有任务都搞定了！</p>
+                            </div>
+                        ) : (
+                            <ul>
+                                {pendingTasks.map(task => (
+                                    <TaskItem key={task.id} task={task} updateTask={updateTask} deleteTask={deleteTask} />
+                                ))}
+                            </ul>
+                        )}
+                    </section>
+
+                    {completedTasks.length > 0 && (
+                        <section className="opacity-80 hover:opacity-100 transition duration-500">
+                            <h2 className="text-lg font-bold text-gray-500 dark:text-gray-400 mb-4">已完成</h2>
+                            <ul>
+                                {completedTasks.map(task => (
+                                    <TaskItem key={task.id} task={task} updateTask={updateTask} deleteTask={deleteTask} />
+                                ))}
+                            </ul>
+                        </section>
+                    )}
+                </div>
+            </div>
+
+            {/* 悬浮添加按钮 */}
             <button
-                onClick={() => setIsModalOpen(true)}
-                className="fixed bottom-6 right-6 p-4 bg-blue-600 text-white rounded-full shadow-2xl hover:bg-blue-700 transition duration-300 transform hover:scale-105 z-50"
-                title="新增任务"
+                onClick={() => setIsTaskModalOpen(true)}
+                className="fixed bottom-8 right-8 p-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-full shadow-2xl shadow-blue-500/40 hover:scale-110 active:scale-95 transition-all duration-300 z-50 group"
             >
-                <Plus className="w-7 h-7" />
+                <Plus className="w-7 h-7 group-hover:rotate-90 transition duration-300" />
             </button>
 
-            {/* 任务新增模态窗口 */}
-            <TaskModal 
-                isOpen={isModalOpen} 
-                onClose={() => setIsModalOpen(false)} 
-                currentGroup={currentGroup} 
-                addTask={addTask}
-            />
-
-            {/* LLM 任务分解模态窗口 */}
-            <ExpandTaskModal 
-                isOpen={isExpandModalOpen} 
-                onClose={() => setIsExpandModalOpen(false)} 
-                task={taskToExpand}
-                currentGroup={currentGroup}
-                addTask={addTask} 
-            />
+            {/* 新增任务模态框 */}
+            {isTaskModalOpen && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+                    <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-2xl w-full max-w-md p-6 transform transition-all scale-100 animate-slide-in">
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-xl font-bold text-gray-800 dark:text-white">新任务 · {currentGroup}</h3>
+                            <button onClick={() => setIsTaskModalOpen(false)} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition">
+                                <X className="w-5 h-5 text-gray-500" />
+                            </button>
+                        </div>
+                        <form onSubmit={addTask}>
+                            <input
+                                autoFocus
+                                type="text"
+                                value={newTaskTitle}
+                                onChange={(e) => setNewTaskTitle(e.target.value)}
+                                placeholder="准备做什么？"
+                                className="w-full text-lg p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border-2 border-transparent focus:border-blue-500 focus:bg-white dark:focus:bg-gray-700 outline-none transition mb-6 dark:text-white"
+                            />
+                            <div className="flex justify-end space-x-3">
+                                <button
+                                    type="button"
+                                    onClick={() => setIsTaskModalOpen(false)}
+                                    className="px-5 py-2.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition font-medium"
+                                >
+                                    取消
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={!newTaskTitle.trim()}
+                                    className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg shadow-blue-500/30 transition disabled:opacity-50 disabled:shadow-none"
+                                >
+                                    创建任务
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
 
 export default App;
-
