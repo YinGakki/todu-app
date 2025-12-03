@@ -3,6 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { 
     getAuth, 
     signInAnonymously, 
+    signInWithCustomToken, // 导入 CustomToken 登录
     onAuthStateChanged 
 } from 'firebase/auth';
 import { 
@@ -17,7 +18,7 @@ import {
     deleteDoc,
     orderBy
 } from 'firebase/firestore';
-import { Plus, X, Check, Trash2, LayoutGrid, Loader2, Zap, User, Sparkles, MessageSquare } from 'lucide-react';
+import { Plus, X, Check, Trash2, LayoutGrid, Loader2, Zap, User, Sparkles } from 'lucide-react';
 
 // --- 1. Firebase 初始化与全局配置 (使用 Canvas 全局变量) ---
 // 从全局变量 __app_id 获取应用标识符，如果不存在则使用默认值
@@ -26,12 +27,17 @@ let FIREBASE_CONFIG = {};
 
 try {
     // 从全局变量 __firebase_config 尝试解析 Firebase 配置
-    if (typeof __firebase_config !== 'undefined') {
+    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
         FIREBASE_CONFIG = JSON.parse(__firebase_config);
     }
 } catch (e) {
     console.error("Failed to parse Firebase configuration:", e);
+    // 保持配置为空，让后续逻辑检测到
+    FIREBASE_CONFIG = {};
 }
+
+// 全局变量 __initial_auth_token 包含认证所需的令牌
+const INITIAL_AUTH_TOKEN = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
 // 使用私有路径存储任务
 const getTasksCollectionRef = (db, userId) => {
@@ -51,7 +57,7 @@ const LoadingSpinner = () => (
 );
 
 
-// --- 3. 核心组件：任务模态窗口 (TaskModal 保持不变) ---
+// --- 3. 核心组件：任务模态窗口 ---
 const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
     const [title, setTitle] = useState('');
     const [importance, setImportance] = useState('普通');
@@ -219,7 +225,7 @@ const TaskItem = ({ task, updateTask, deleteTask, onGenerateBreakdown }) => {
             </div>
 
             <div className="flex space-x-2 items-center">
-                 {/* 新增的 AI 拆解按钮 */}
+                 {/* AI 拆解按钮 */}
                 <button
                     onClick={() => onGenerateBreakdown(task.title)}
                     className="p-3 text-purple-600 bg-purple-100 rounded-full hover:bg-purple-500 hover:text-white transition duration-200 flex-shrink-0 shadow-md flex items-center"
@@ -242,7 +248,7 @@ const TaskItem = ({ task, updateTask, deleteTask, onGenerateBreakdown }) => {
 };
 
 
-// --- 6. 主应用组件 (新增 Gemini 逻辑) ---
+// --- 6. 主应用组件 (已修复 Firebase 身份验证逻辑) ---
 const App = () => {
     const [db, setDb] = useState(null);
     const [auth, setAuth] = useState(null);
@@ -265,7 +271,7 @@ const App = () => {
     });
 
 
-    // --- Gemini API Call Logic ---
+    // --- Gemini API Call Logic (保持不变) ---
     const generateTaskBreakdown = useCallback(async (title) => {
         setBreakdownState({ isOpen: true, title: title, breakdown: '', loading: true });
         
@@ -324,12 +330,14 @@ const App = () => {
     }, []);
 
 
-    // --- Firebase Auth & Init (保持不变) ---
+    // --- Firebase Auth & Init (修复后的逻辑) ---
     useEffect(() => {
         let unsubscribeAuth = null; 
 
         if (!FIREBASE_CONFIG.apiKey) {
-            setError("错误: Firebase 配置未找到。请设置 Vercel 环境变量。");
+            // 改进错误信息: 检查配置是否真的存在
+            console.error("Firebase Config Missing. FIREBASE_CONFIG:", FIREBASE_CONFIG);
+            setError("错误: Firebase 配置缺失。无法初始化数据库连接。");
             setIsAuthReady(true);
             return; 
         }
@@ -341,23 +349,33 @@ const App = () => {
             setDb(firestoreDb);
             setAuth(authInstance);
 
-            const handleAuth = async () => {
+            const performAuth = async (auth) => {
                 try {
-                    await signInAnonymously(authInstance);
+                    if (INITIAL_AUTH_TOKEN) {
+                        // 优先使用提供的 custom token 登录
+                        await signInWithCustomToken(auth, INITIAL_AUTH_TOKEN);
+                        console.log("Signed in with Custom Token.");
+                    } else {
+                        // 否则使用匿名登录
+                        await signInAnonymously(auth);
+                        console.log("Signed in Anonymously.");
+                    }
                 } catch (e) {
                     console.error("Firebase Auth Error:", e);
-                    setError("认证失败。请检查 Firebase 配置和匿名登录是否启用。");
+                    setError(`身份验证失败: ${e.message}`);
                 } 
             };
 
+            // 设置认证状态监听器
             unsubscribeAuth = onAuthStateChanged(authInstance, (user) => {
                 if (user) {
                     setUserId(user.uid);
-                } else if (!userId) {
-                    handleAuth(); // 尝试匿名登录
+                    console.log("User ID set:", user.uid);
+                } else {
+                    // 如果未登录，尝试进行登录 (仅在初始化时触发一次)
+                    performAuth(authInstance);
                 }
-                // 确保无论成功失败，都标记为就绪，以便后续流程继续
-                setIsAuthReady(true);
+                setIsAuthReady(true); // 无论登录成功与否，标记认证流程已完成
             });
 
             return () => {
@@ -368,7 +386,7 @@ const App = () => {
             
         } catch (e) {
             console.error("Firebase Initialization Error:", e);
-            setError("Firebase 初始化失败。");
+            setError(`Firebase 初始化失败: ${e.message}`);
             setIsAuthReady(true); 
         }
     }, []);
@@ -376,6 +394,7 @@ const App = () => {
 
     // --- Firestore Realtime Listener (保持不变) ---
     useEffect(() => {
+        // 确保在 auth 流程完成前不进行数据查询
         if (!db || !userId || !isAuthReady) {
             setLoading(false); 
             return;
@@ -387,7 +406,8 @@ const App = () => {
         try {
             const tasksRef = getTasksCollectionRef(db, userId);
             
-            // 查询：过滤当前组，并按是否完成和创建时间排序 (需要复合索引)
+            // 查询：过滤当前组，并按是否完成和创建时间排序 
+            // 注意：orderBy('is_done') 和 orderBy('createdAt', 'desc') 可能需要复合索引
             const q = query(
                 tasksRef, 
                 where('groupId', '==', currentGroup),
@@ -405,6 +425,7 @@ const App = () => {
             }, (err) => {
                 console.error("Firestore Listen Error:", err);
                 if (err.code === 'failed-precondition') {
+                     // 明确提示需要索引
                      setError("查询设置错误：请检查 Firebase Console 是否已创建复合索引 (groupId, is_done, createdAt)");
                 } else {
                      setError("实时数据同步失败。请检查 Firestore 规则。");
@@ -480,7 +501,8 @@ const App = () => {
         );
     }
     
-    const userStatus = auth?.currentUser?.isAnonymous ? "匿名用户" : "未登录";
+    // 检查 Auth 状态，提供清晰的用户身份信息
+    const userStatus = auth?.currentUser?.isAnonymous ? "匿名用户" : (auth?.currentUser?.uid ? "已登录" : "未登录");
 
     return (
         <div className="min-h-screen bg-gray-50 pb-28 relative font-sans">
@@ -534,7 +556,7 @@ const App = () => {
                         <p className="font-bold text-gray-700">当前用户 ({userStatus})</p>
                         <code className="break-all text-xs text-gray-500 mt-1 flex items-center">
                             <User className="w-4 h-4 mr-1 text-indigo-500"/>
-                            {userId || 'N/A'}
+                            {userId || 'N/A (正在等待认证)'}
                         </code>
                     </div>
                 </div>
