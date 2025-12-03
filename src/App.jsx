@@ -18,29 +18,28 @@ import {
     deleteDoc,
     orderBy
 } from 'firebase/firestore';
-import { Plus, X, Check, Trash2, LayoutGrid, Loader2, Zap, User, Sparkles } from 'lucide-react';
+import { Plus, X, Check, Trash2, LayoutGrid, Loader2, Zap, User, Sparkles, XCircle } from 'lucide-react';
 
 // --- 1. Global Configuration and Firebase Setup ---
 const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-todo-app';
 let FIREBASE_CONFIG = {};
 let INITIAL_AUTH_TOKEN = null;
-let IS_CONFIG_VALID = false; // 新增配置有效性标记
+let CONFIG_ERROR_MESSAGE = '';
 
 try {
-    // 确保 JSON 解析发生在 try-catch 块内
     if (typeof __firebase_config === 'string' && __firebase_config.trim().length > 0) {
         FIREBASE_CONFIG = JSON.parse(__firebase_config);
     }
     INITIAL_AUTH_TOKEN = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-    // **关键检查**: 确保配置包含必要的字段
-    if (FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId) {
-        IS_CONFIG_VALID = true;
+    // **关键检查**: 严格验证配置中是否包含 Firebase 初始化所需的关键字段
+    if (!FIREBASE_CONFIG || !FIREBASE_CONFIG.apiKey || !FIREBASE_CONFIG.projectId) {
+        CONFIG_ERROR_MESSAGE = "致命错误：Firebase 配置缺失。请确保提供了有效的 'apiKey' 和 'projectId' 字段。";
+        FIREBASE_CONFIG = {}; // 确保配置对象是空的，阻止后续初始化
     }
-
 } catch (e) {
-    console.error("Firebase environment configuration failed during JSON parsing:", e);
-    // IS_CONFIG_VALID 保持为 false
+    CONFIG_ERROR_MESSAGE = `配置解析失败：注入的 Firebase 配置不是有效的 JSON 字符串。错误信息: ${e.message}`;
+    FIREBASE_CONFIG = {}; 
 }
 
 // Function to get the correct Firestore collection reference
@@ -61,7 +60,20 @@ const LoadingSpinner = () => (
     </div>
 );
 
-// --- 3. Task Modal Component (保持不变) ---
+const ConfigError = ({ message }) => (
+    <div className="flex h-screen items-center justify-center bg-red-50 p-8">
+        <div className="bg-white p-10 rounded-xl shadow-2xl border-l-8 border-red-500 max-w-lg text-center">
+            <XCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+            <h1 className="text-2xl font-bold text-red-700 mb-3">致命错误：配置缺失</h1>
+            <p className="text-lg text-gray-700">{message}</p>
+            <p className="mt-4 text-sm text-gray-500">
+                应用无法启动，因为它缺少或无法解析运行所需的数据库配置。
+            </p>
+        </div>
+    </div>
+);
+
+// --- 3. Task Modal Component (略) ---
 
 const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
     const [title, setTitle] = useState('');
@@ -138,7 +150,7 @@ const TaskModal = ({ isOpen, onClose, currentGroup, addTask }) => {
     );
 };
 
-// --- 4. AI Breakdown Modal Component (保持不变) ---
+// --- 4. AI Breakdown Modal Component (略) ---
 
 const BreakdownModal = ({ isOpen, onClose, title, breakdown, loading }) => {
     if (!isOpen) return null;
@@ -186,7 +198,7 @@ const BreakdownModal = ({ isOpen, onClose, title, breakdown, loading }) => {
     );
 };
 
-// --- 5. Task Item Component (保持不变) ---
+// --- 5. Task Item Component (略) ---
 
 const TaskItem = ({ task, updateTask, deleteTask, onGenerateBreakdown }) => {
     
@@ -255,6 +267,11 @@ const TaskItem = ({ task, updateTask, deleteTask, onGenerateBreakdown }) => {
 // --- 6. Main App Component ---
 
 const App = () => {
+    // 检查全局配置错误，如果存在，则直接返回错误 UI
+    if (CONFIG_ERROR_MESSAGE) {
+        return <ConfigError message={CONFIG_ERROR_MESSAGE} />;
+    }
+
     const [db, setDb] = useState(null);
     const [auth, setAuth] = useState(null);
     const [userId, setUserId] = useState(null);
@@ -337,20 +354,13 @@ const App = () => {
     }, []);
 
 
-    // --- Firebase Auth & Init (核心时序修复 + 配置校验) ---
+    // --- Firebase Auth & Init (核心时序修复) ---
     useEffect(() => {
-        // **新增守卫**: 如果配置无效，立即停止加载并设置错误
-        if (!IS_CONFIG_VALID) {
-            setError("初始化失败：Firebase 配置缺失或无效。请确保提供了 apiKey 和 projectId。");
-            setIsAuthReady(true);
-            setLoading(false);
-            return; 
-        }
-
+        // 由于 App 组件入口已经检查了配置，这里只需要处理运行时错误
         const initFirebaseAndAuth = async () => {
             let unsubscribeAuth = () => {};
             try {
-                // 1. 初始化 Firebase App (如果 IS_CONFIG_VALID 为 true, 这里应该成功)
+                // 1. 初始化 Firebase App
                 const app = initializeApp(FIREBASE_CONFIG);
                 const firestoreDb = getFirestore(app);
                 const authInstance = getAuth(app);
@@ -382,8 +392,7 @@ const App = () => {
                 }
                 
             } catch (e) {
-                console.error("Firebase Initialization/Auth Error:", e);
-                // 如果在 try 块内发生，可能是网络或运行时错误
+                console.error("Firebase Initialization/Auth Error (Runtime):", e);
                 setError(`身份验证或初始化失败: ${e.message}`);
                 
                 if (!authCompletedRef.current) {
@@ -399,7 +408,6 @@ const App = () => {
         const cleanupPromise = initFirebaseAndAuth();
 
         return () => {
-            // 组件卸载时清理 auth 监听器
             cleanupPromise.then(unsub => unsub && unsub());
         };
         
