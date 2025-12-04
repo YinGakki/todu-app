@@ -1,0 +1,8 @@
+    name = "task-pro"
+    #pages_build_output_dir = "dist"
+    compatibility_date = "2024-01-01"
+
+    [[d1_databases]]
+    binding = "DB" # 代码里用这个名字访问数据库
+    database_name = "task-db"
+    database_id = "e8c4a776-ea97-4ab9-af81-dc035b358e25"
