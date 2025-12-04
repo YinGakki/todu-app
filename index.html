@@ -3,26 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>任务管理器 Pro</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Task Pro</title>
 
-    <!-- 1. 引入 Tailwind CSS -->
+    <!-- 1. 引入 Tailwind CSS (CDN版) -->
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- 2. 配置 Tailwind (支持深色模式和自定义动画) -->
+    <!-- 2. 配置 Tailwind (深色模式 + 动画) -->
     <script>
       tailwind.config = {
-        darkMode: 'class', // 关键：启用手动/Class控制的深色模式
+        darkMode: 'class', // 关键：使用 class 模式控制日夜切换
         theme: {
           extend: {
+            fontFamily: {
+              sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+            },
             animation: {
-              'slide-in': 'slideIn 0.4s ease-out forwards', // 任务进入动画
-              'fade-in': 'fadeIn 0.5s ease-out forwards',   // 模态框淡入
+              'slide-in': 'slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+              'fade-in': 'fadeIn 0.3s ease-out forwards',
             },
             keyframes: {
               slideIn: {
-                '0%': { opacity: '0', transform: 'translateY(20px)' },
-                '100%': { opacity: '1', transform: 'translateY(0)' },
+                '0%': { opacity: '0', transform: 'translateY(20px) scale(0.98)' },
+                '100%': { opacity: '1', transform: 'translateY(0) scale(1)' },
               },
               fadeIn: {
                 '0%': { opacity: '0' },
@@ -34,62 +37,97 @@
       }
     </script>
 
-    <!-- 3. 全局样式 (自定义滚动条) -->
+    <!-- 3. 全局 CSS 修复与美化 -->
     <style>
-      body {
-        margin: 0;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      /* 基础设置 */
+      :root {
+        color-scheme: light; /* 默认原生控件亮色 */
+      }
+      .dark {
+        color-scheme: dark; /* 关键：让原生日期弹窗变黑 */
       }
 
-      /* 针对 Webkit 浏览器 (Chrome/Safari) 的滚动条美化 */
+      body {
+        margin: 0;
+        -webkit-tap-highlight-color: transparent; /* 移动端点击不高亮 */
+        background-color: #f9fafb;
+      }
+      .dark body {
+        background-color: #030712;
+      }
+
+      /* --- 滚动条美化 (Chrome/Safari/Edge) --- */
       ::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
+        width: 6px;
+        height: 6px;
       }
-      
       ::-webkit-scrollbar-track {
-        background: transparent; 
+        background: transparent;
       }
-      
       ::-webkit-scrollbar-thumb {
-        background: #cbd5e1; /* 浅色模式滚动条颜色 */
-        border-radius: 4px;
+        background: #cbd5e1;
+        border-radius: 99px;
       }
-      
       ::-webkit-scrollbar-thumb:hover {
         background: #94a3b8;
       }
-
-      /* 深色模式下的滚动条样式 */
       .dark ::-webkit-scrollbar-thumb {
-        background: #4b5563; 
+        background: #374151;
       }
       .dark ::-webkit-scrollbar-thumb:hover {
-        background: #6b7280;
+        background: #4b5563;
       }
-      /* 新增：隐藏日期选择器的默认图标，我们用 Lucide 图标代替 */
+
+      /* 隐藏滚动条但保留功能 (用于横向滚动的组标签) */
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+
+      /* --- 关键：日期选择器美化 --- */
+      /* 1. 隐藏原生丑陋的日历图标，以便透出我们自定义的 Lucide 图标 */
+      input[type="datetime-local"]::-webkit-calendar-picker-indicator,
       input[type="date"]::-webkit-calendar-picker-indicator {
         opacity: 0;
+        display: block;
         position: absolute;
-        left: 0;
         top: 0;
+        left: 0;
         width: 100%;
         height: 100%;
         cursor: pointer;
+        z-index: 10;
       }
-  
-      /* 进度条背景过渡 */
-      .task-bg-transition {
-        transition: background-size 0.5s ease-in-out, background-color 0.3s ease;
+      
+      /* 2. 确保输入框本身充满父容器 */
+      input[type="datetime-local"],
+      input[type="date"] {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        border: none;
+        background: transparent;
+        color: transparent; /* 隐藏原生文字，使用我们自定义的格式化显示 */
+        padding: 0;
+        margin: 0;
+        z-index: 1;
+      }
+
+      /* --- 交互优化 --- */
+      /* 防止在任务卡片上水平滑动时，触发浏览器的后退/前进手势 */
+      .touch-pan-y {
+        touch-action: pan-y;
       }
     </style>
   </head>
   
   <body>
-    <!-- React 应用挂载点 -->
     <div id="root"></div>
-    
-    <!-- 入口文件 -->
+    <!-- 请确认这里的路径与你项目实际路径一致，通常 Vite 项目是 /src/main.jsx -->
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
