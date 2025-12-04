@@ -1,5 +1,5 @@
-    name = "task-pro"
-    #pages_build_output_dir = "dist"
+    name = "todu-app"
+    pages_build_output_dir = "dist"
     compatibility_date = "2024-01-01"
 
     [[d1_databases]]
